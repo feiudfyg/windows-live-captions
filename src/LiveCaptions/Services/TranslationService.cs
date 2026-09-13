@@ -86,6 +86,8 @@ public sealed partial class TranslationService : IDisposable
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
                     Temperature = (float)_settings.TranslateTemperature,
+                    RepeatPenalty = 1.1f,
+                    PenaltyCount = 128,
                 },
                 AntiPrompts = ["<|im_end|>", "<|im_start|>", "<|endoftext|>"],
             };
@@ -170,7 +172,7 @@ public sealed partial class TranslationService : IDisposable
             }
         }
 
-        return text;
+        return Asr.TextGuards.TruncateRepetition(text);
     }
 
     [GeneratedRegex(@" thinking.*?<｜end▁of▁thinking｜>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]

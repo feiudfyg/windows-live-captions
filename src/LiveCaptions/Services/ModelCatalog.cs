@@ -2,16 +2,26 @@ namespace LiveCaptions.Services;
 
 public sealed record ModelFile(string FileName, string Url, long ApproxBytes);
 
+public sealed record ModelArchive(string ArchiveName, string Url, string ExtractedDirectory, long ApproxBytes);
+
 public sealed record ModelEntry(
     string Id,
     string Kind,            // "asr" | "mmproj" | "llm"
     string DisplayName,
     string Description,
-    ModelFile[] Files)
+    ModelFile[] Files,
+    ModelArchive? Archive = null)
 {
-    public bool Exists => Files.All(f => File.Exists(Path.Combine(ModelCatalog.ModelsDirectory, f.FileName)));
+    public bool Exists => Archive is not null
+        ? Directory.Exists(Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory))
+        : Files.All(f => File.Exists(Path.Combine(ModelCatalog.ModelsDirectory, f.FileName)));
 
-    public long TotalBytes => Files.Sum(f => f.ApproxBytes);
+    /// <summary>Path used for loading: a file for plain models, a directory for archived ones.</summary>
+    public string PrimaryPath => Archive is not null
+        ? Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory)
+        : ModelCatalog.PathOf(Files[0].FileName);
+
+    public long TotalBytes => Archive is not null ? Archive.ApproxBytes : Files.Sum(f => f.ApproxBytes);
 }
 
 /// <summary>
@@ -27,6 +37,47 @@ public static class ModelCatalog
     private const string WhisperRepo = "https://huggingface.co/ggerganov/whisper.cpp";
     private const string HauhauRepo = "https://huggingface.co/HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive";
     private const string Qwen25Repo = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF";
+    private const string SherpaRepo = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
+
+    public static readonly ModelEntry ZipformerJa = new(
+        "zipformer-ja",
+        "asr",
+        "Zipformer 日语 (ReazonSpeech)",
+        "RNN-T 流式架构的离线版：抗噪、不会复读退化，CPU 实时，适合日语视频",
+        [],
+        new ModelArchive("sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01.tar.bz2",
+            $"{SherpaRepo}/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01.tar.bz2",
+            "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01", 400_000_000));
+
+    public static readonly ModelEntry ZipformerZhEn = new(
+        "zipformer-zh-en",
+        "asr",
+        "Zipformer 中英双语",
+        "中英文混合识别，抗噪、不会复读退化，CPU 实时",
+        [],
+        new ModelArchive("sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2",
+            $"{SherpaRepo}/sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2",
+            "sherpa-onnx-zipformer-zh-en-2023-11-22", 330_000_000));
+
+    public static readonly ModelEntry ZipformerCantonese = new(
+        "zipformer-yue",
+        "asr",
+        "Zipformer 粤语",
+        "粤语识别，抗噪、不会复读退化，CPU 实时",
+        [],
+        new ModelArchive("sherpa-onnx-zipformer-cantonese-2024-03-13.tar.bz2",
+            $"{SherpaRepo}/sherpa-onnx-zipformer-cantonese-2024-03-13.tar.bz2",
+            "sherpa-onnx-zipformer-cantonese-2024-03-13", 330_000_000));
+
+    public static readonly ModelEntry ZipformerKorean = new(
+        "zipformer-ko",
+        "asr",
+        "Zipformer 韩语",
+        "韩语识别，抗噪、不会复读退化，CPU 实时",
+        [],
+        new ModelArchive("sherpa-onnx-zipformer-korean-2024-06-24.tar.bz2",
+            $"{SherpaRepo}/sherpa-onnx-zipformer-korean-2024-06-24.tar.bz2",
+            "sherpa-onnx-zipformer-korean-2024-06-24", 330_000_000));
 
     public static readonly ModelEntry QwenAsr17B = new(
         "qwen3-asr-1.7b",
@@ -94,7 +145,8 @@ public static class ModelCatalog
 
     public static readonly ModelEntry[] All =
     [
-        QwenAsr17B, QwenAsr06B, WhisperTurbo, LlmQwen35Q8, LlmQwen35Q4, LlmQwen25Small,
+        QwenAsr17B, QwenAsr06B, WhisperTurbo, ZipformerJa, ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
+        LlmQwen35Q8, LlmQwen35Q4, LlmQwen25Small,
     ];
 
     public static string PathOf(string fileName) => Path.Combine(ModelsDirectory, fileName);

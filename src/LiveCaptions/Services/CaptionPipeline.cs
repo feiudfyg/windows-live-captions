@@ -32,6 +32,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
     private bool _speech;
     private int _silenceMs;
+    private long _lastDecodeMs;
     private double _levelAccum;
     private int _levelCount;
     private double _noiseFloor = 0.0005;
@@ -235,23 +236,30 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
             var utteranceMs = _utterance.Count * 1000.0 / SampleRate;
 
-            if (_speech && _silenceMs >= _settings.FinalSilenceMs && utteranceMs >= 400)
+            // A decode blocks this loop, so back off the partial cadence by the time
+            // the previous decode took - otherwise partials run back-to-back and the
+            // captions lag behind live audio.
+            var partialInterval = Math.Max(_settings.PartialIntervalMs, _lastDecodeMs + 250);
+            var duePartial = _speech && utteranceMs >= _settings.MinPartialSeconds * 1000.0
+                             && (DateTime.UtcNow - _lastPartialAt).TotalMilliseconds >= partialInterval;
+
+            if (_speech && utteranceMs >= _settings.MaxUtteranceSeconds * 1000.0)
             {
+                // Long continuous speech: commit what we have so captions keep flowing.
                 await DecodeAsync(final: true, ct).ConfigureAwait(false);
             }
-            else if (_speech && utteranceMs >= _settings.MinPartialSeconds * 1000.0
-                     && (DateTime.UtcNow - _lastPartialAt).TotalMilliseconds >= _settings.PartialIntervalMs)
+            else if (_speech && _silenceMs >= _settings.FinalSilenceMs && utteranceMs >= 400)
+            {
+                await DecodeAsync(final: true, ct, silenceEnd: true).ConfigureAwait(false);
+            }
+            else if (duePartial)
             {
                 await DecodeAsync(final: false, ct).ConfigureAwait(false);
-            }
-            else if (_speech && utteranceMs >= _settings.MaxUtteranceSeconds * 1000.0)
-            {
-                await DecodeAsync(final: true, ct).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task DecodeAsync(bool final, CancellationToken ct)
+    private async Task DecodeAsync(bool final, CancellationToken ct, bool silenceEnd = false)
     {
         var engine = _asr;
         if (engine is null || !engine.IsLoaded)
@@ -262,12 +270,18 @@ public sealed class CaptionPipeline : IAsyncDisposable
             return;
         }
 
+        // Snapshot and clear first: audio arriving while we decode stays in the
+        // pending/channel buffers and becomes the start of the next utterance.
         var samples = _utterance.ToArray();
+        _utterance.Clear();
 
-        if (final)
+        if (silenceEnd)
         {
-            _utterance.Clear();
             _speech = false;
+            _silenceMs = 0;
+        }
+        else if (final)
+        {
             _silenceMs = 0;
         }
         else
@@ -281,11 +295,12 @@ public sealed class CaptionPipeline : IAsyncDisposable
         }
 
         string text;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var language = LanguageCatalog.FindSource(_settings.SourceLanguage);
-            text = await engine.TranscribeAsync(samples, language, _lastFinalText.Length > 0 ? Tail(_lastFinalText, 200) : null, ct)
-                .ConfigureAwait(false);
+            var context = _settings.UseAsrContext && _lastFinalText.Length > 0 ? Tail(_lastFinalText, 200) : null;
+            text = await engine.TranscribeAsync(samples, language, context, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -296,11 +311,31 @@ public sealed class CaptionPipeline : IAsyncDisposable
             ErrorOccurred?.Invoke($"识别失败: {ex}");
             return;
         }
+        finally
+        {
+            stopwatch.Stop();
+        }
 
-        text = text.Trim();
+        _lastDecodeMs = stopwatch.ElapsedMilliseconds;
+        text = TextGuards.TruncateRepetition(TextGuards.Normalize(text));
         if (!IsMeaningful(text)) return;
 
-        Log.Write($"[asr] {(final ? "final" : "partial")} {samples.Length / 16000.0:0.00}s: {text}");
+        if (TextGuards.IsDegenerate(text))
+        {
+            Log.Write($"[asr] dropped repetitive output: {text[..Math.Min(80, text.Length)]}");
+            return;
+        }
+
+        // Long partials that clearly end a sentence are committed as finals so that
+        // captions keep flowing (and get translated) during continuous speech.
+        if (!final && _settings.PartialCommitSeconds > 0
+            && samples.Length / (double)SampleRate >= _settings.PartialCommitSeconds
+            && EndsWithSentencePunctuation(text))
+        {
+            final = true;
+        }
+
+        Log.Write($"[asr] {(final ? "final" : "partial")} {samples.Length / 16000.0:0.00}s in {stopwatch.ElapsedMilliseconds}ms: {text}");
 
         if (final && string.Equals(text, _lastFinalText, StringComparison.OrdinalIgnoreCase))
         {
@@ -342,6 +377,16 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
     private static string Tail(string text, int maxChars)
         => text.Length <= maxChars ? text : text[^maxChars..];
+
+    private static bool EndsWithSentencePunctuation(string text)
+    {
+        if (text.Length == 0) return false;
+        return text[^1] switch
+        {
+            '.' or '!' or '?' or '。' or '！' or '？' or '…' => true,
+            _ => false,
+        };
+    }
 
     private static bool IsMeaningful(string text)
     {

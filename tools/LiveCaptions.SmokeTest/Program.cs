@@ -37,6 +37,7 @@ internal static class Program
                 "capture" when args.Length >= 2 => await CaptureAsync(int.Parse(args[1]), args.Length > 2 ? args[2] : null),
                 "asr-qwen" when args.Length >= 4 => await AsrQwenAsync(args[1], args[2], args[3], args.Length > 4 ? args[4] : null, args.Length > 5 ? args[5] : "auto"),
                 "asr-whisper" when args.Length >= 3 => await AsrWhisperAsync(args[1], args[2], args.Length > 3 ? args[3] : null),
+                "asr-zipformer" when args.Length >= 3 => AsrZipformer(args[1], args[2]),
                 "mt" when args.Length >= 4 => await TranslateAsync(args[1], args[2], args[3], args.Length > 4 ? args[4] : "auto"),
                 _ => throw new ArgumentException("unknown command or missing arguments"),
             };
@@ -142,6 +143,41 @@ internal static class Program
         {
             NativeLibraryConfig.All.WithSelectingPolicy(new Cuda12FirstSelectingPolicy(cudaDir));
         }
+    }
+
+    /// <summary>Zipformer (sherpa-onnx) ASR on a model directory.</summary>
+    private static int AsrZipformer(string modelDirectory, string wavPath)
+    {
+        var samples = LoadWav16kMono(wavPath);
+
+        string Find(string kind) => Directory.EnumerateFiles(modelDirectory, kind + "*.onnx")
+            .OrderByDescending(f => f.Contains(".int8.", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(f => f.Length)
+            .First();
+
+        var config = new SherpaOnnx.OfflineRecognizerConfig();
+        config.FeatConfig.SampleRate = 16000;
+        config.FeatConfig.FeatureDim = 80;
+        config.ModelConfig.Transducer.Encoder = Find("encoder");
+        config.ModelConfig.Transducer.Decoder = Find("decoder");
+        config.ModelConfig.Transducer.Joiner = Find("joiner");
+        config.ModelConfig.Tokens = Path.Combine(modelDirectory, "tokens.txt");
+        config.ModelConfig.NumThreads = 4;
+        config.ModelConfig.Provider = "cpu";
+        config.DecodingMethod = "greedy_search";
+
+        var sw = Stopwatch.StartNew();
+        using var recognizer = new SherpaOnnx.OfflineRecognizer(config);
+        using var stream = recognizer.CreateStream();
+        stream.AcceptWaveform(16000, samples);
+        recognizer.Decode(stream);
+        sw.Stop();
+
+        var text = stream.Result.Text.Trim();
+        Console.WriteLine();
+        Console.WriteLine($"[asr] {sw.ElapsedMilliseconds} ms ({(samples.Length / 16000.0) / (sw.ElapsedMilliseconds / 1000.0):0.00}x realtime)");
+        Console.WriteLine($"[text] {text}");
+        return 0;
     }
 
     private static float[] LoadWav16kMono(string path)    {

@@ -29,10 +29,64 @@ public sealed class ModelDownloadService
     {
         Directory.CreateDirectory(ModelCatalog.ModelsDirectory);
 
+        if (entry.Archive is { } archive)
+        {
+            await EnsureArchiveAsync(archive, progress, ct).ConfigureAwait(false);
+            return;
+        }
+
         foreach (var file in entry.Files)
         {
             var path = ModelCatalog.PathOf(file.FileName);
             await ResumeDownloadAsync(file, path, progress, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Download a .tar.bz2 model bundle and extract it into the models directory.</summary>
+    private static async Task EnsureArchiveAsync(ModelArchive archive,
+        IProgress<(string file, double ratio, long received, long total)>? progress, CancellationToken ct)
+    {
+        var targetDirectory = Path.Combine(ModelCatalog.ModelsDirectory, archive.ExtractedDirectory);
+        if (Directory.Exists(targetDirectory))
+        {
+            progress?.Report((archive.ExtractedDirectory, 1.0, 0, 0));
+            return;
+        }
+
+        var downloads = Path.Combine(ModelCatalog.ModelsDirectory, "_downloads");
+        Directory.CreateDirectory(downloads);
+        var archivePath = Path.Combine(downloads, archive.ArchiveName);
+
+        var file = new ModelFile(archive.ArchiveName, archive.Url, archive.ApproxBytes);
+        await ResumeDownloadAsync(file, archivePath, progress, ct).ConfigureAwait(false);
+
+        // bsdtar ships with Windows 10+ and handles .tar.bz2 natively.
+        var startInfo = new System.Diagnostics.ProcessStartInfo("tar.exe")
+        {
+            Arguments = $"-xjf \"{archivePath}\" -C \"{ModelCatalog.ModelsDirectory}\"",
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var process = System.Diagnostics.Process.Start(startInfo)
+            ?? throw new InvalidOperationException("无法启动 tar.exe 解压模型包");
+        var error = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+        await process.WaitForExitAsync(ct).ConfigureAwait(false);
+
+        if (process.ExitCode != 0 || !Directory.Exists(targetDirectory))
+        {
+            throw new InvalidOperationException($"模型包解压失败: {error.Trim()}");
+        }
+
+        try
+        {
+            File.Delete(archivePath);
+        }
+        catch
+        {
+            // Best-effort cleanup.
         }
     }
 

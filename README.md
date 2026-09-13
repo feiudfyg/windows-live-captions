@@ -15,12 +15,32 @@ Windows 桌面应用：捕获**系统播放的音频**（WASAPI 回环），在�
 ## 功能
 
 - **系统音频捕获**：WASAPI loopback（NAudio），自动重采样为 16 kHz 单声道；自适应噪声底噪的语音端点检测（VAD），无需手动调参
-- **实时识别**：默认 **Qwen3-ASR-1.7B**（52 种语言/方言，支持自动语种识别），以流式部分结果 + 断句最终结果的方式输出；也可切换到 **Whisper large-v3-turbo**（whisper.cpp CUDA）
-- **实时翻译**：本地 **Qwen3.5-9B**（GGUF，Q8_0）逐句翻译，token 级流式刷新；已检测到与目标语言一致时自动跳过翻译
-- **GPU 加速**：llama.cpp **CUDA 12**（默认）或 **Vulkan** 后端，全层 offload + KV cache 显存驻留；Whisper 走 CUDA 13
+- **实时识别**（三种引擎可选）：
+  - **Qwen3-ASR-1.7B**（默认）：52 种语言/方言、自动语种识别，GPU 加速；内置重复论惩罚与复读截断防退化
+  - **Zipformer（sherpa-onnx）**：RNN-T 架构，**天然不会复读退化**，抗噪能力强，CPU 实时（RTF ≈ 0.05），提供 日语 / 中英双语 / 粤语 / 韩语 模型
+  - **Whisper large-v3-turbo**：whisper.cpp CUDA 加速，兼容性最好
+- **实时翻译**：本地 **Qwen3.5-9B**（GGUF，Q8_0）逐句翻译，token 级流式刷新；与目标语言一致时自动跳过翻译
+- **GPU 加速**：llama.cpp **CUDA 12**（默认）或 **Vulkan** 后端，全层 offload + KV cache 显存驻留；Whisper 走 CUDA 13；Zipformer 走 CPU（模型小、延迟低）
 - **悬浮窗**：无边框、置顶、亚克力半透明；按住面板任意位置拖动、右下角拖动缩放；悬停显示工具栏（开始/暂停、清空、设置、退出）；右键菜单
-- **设置窗口**：引擎/模型选择与一键下载、源语言/目标语言、字号/透明度/行数、灵敏度、GPU 后端
-- **模型管理**：内置模型目录与断点续传下载（HuggingFace）
+- **设置窗口**：引擎/模型选择与一键下载、GPU 后端、源语言/目标语言、字号/透明度/行数、灵敏度，改动实时预览
+- **模型管理**：内置模型目录、断点续传下载、tar.bz2 模型包自动解压（HuggingFace / GitHub releases）
+
+## 管线与抗退化设计
+
+```
+系统音频 ─WASAPI 回环─▶ 16 kHz 单声道 ─▶ 自适应 VAD 分段
+                                             │
+              ┌──────────── 部分结果（间隔可调，按上一轮解码耗时自动退避）
+              │                    │
+              ▼                    ▼
+      ASR 引擎（Qwen3-ASR / Zipformer / Whisper）
+              │  句末标点或 ≥5s 提交；≥10s 强制提交；静音 750ms 断句
+              ├─▶ 重复惩罚采样 + 复读截断 + 退化丢弃（三层防护）
+              ▼
+      文本守卫 ─▶ 逐句翻译（Qwen3.5-9B，CUDA/Vulkan，token 流式）
+              ▼
+      透明置顶悬浮窗（原文 + 译文，最多 N 行滚动）
+```
 
 ## 环境要求
 
@@ -64,11 +84,22 @@ src\LiveCaptions\bin\Release\net10.0-windows10.0.26100.0\win-x64\LiveCaptions.ex
 | 项目 | 结果 |
 | --- | --- |
 | Qwen3-ASR-1.7B (Q8_0) 识别 9 s 音频 | ~165 ms（≈ 54× 实时，CUDA） |
+| Zipformer 日语 识别 5–10 s 音频 | ~150–400 ms（CPU，≈ 20–40× 实时） |
 | Qwen3.5-9B (Q8_0) 单句翻译 | 首 token ≈ 40–80 ms，整句 ≈ 100–200 ms |
 | 显存占用（ASR + LLM + KV 8192 上下文） | ≈ 13 GB |
 | 应用冷启动（加载两个模型并预热） | ≈ 10 s |
 
 Vulkan 与 CUDA 在短句场景下推理速度基本一致（差异 < 20 ms）；CUDA 整体启动更快（无 Vulkan 着色器编译），首次运行会有一次性内核初始化开销（约 18 s，驱动会缓存）。
+
+## 模型下载说明
+
+- 应用内下载使用 HuggingFace / GitHub releases 官方地址；若这些域名受限（代理路由问题），
+  可手动下载后放入 `%LOCALAPPDATA%\LiveCaptions\models`：
+  - Qwen3-ASR / Whisper / Qwen3.5：直接放 GGUF/bin 文件
+  - Zipformer：解压 `.tar.bz2` 得到模型目录（含 `encoder*.onnx`、`decoder*.onnx`、`joiner*.onnx`、`tokens.txt`）
+- GitHub 受限时可使用镜像，例如：
+  `https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/<模型包>`
+- 再次打开设置窗口时，已存在的模型会自动识别
 
 ## 目录结构
 

@@ -220,6 +220,16 @@ public sealed partial class MainWindow : Window
             return new WhisperAsrEngine(path, s.WhisperUseCuda);
         }
 
+        if (string.Equals(s.AsrEngine, "zipformer", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!Directory.Exists(s.AsrModelPath))
+            {
+                throw new FileNotFoundException($"未找到 Zipformer 模型目录: {s.AsrModelPath}（请在设置中下载）");
+            }
+
+            return new SherpaAsrEngine(s.AsrModelPath);
+        }
+
         var model = string.IsNullOrWhiteSpace(s.AsrModelPath) ? ModelCatalog.DefaultAsrModel : s.AsrModelPath;
         var mmproj = string.IsNullOrWhiteSpace(s.AsrMmprojPath) ? ModelCatalog.DefaultAsrMmproj : s.AsrMmprojPath;
         if (!File.Exists(model)) throw new FileNotFoundException($"未找到 ASR 模型: {model}");

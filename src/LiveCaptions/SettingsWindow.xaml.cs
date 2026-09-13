@@ -33,13 +33,11 @@ public sealed partial class SettingsWindow : Window
 
     private void LoadIntoUi()
     {
-        AsrModelCombo.ItemsSource = ModelCatalog.All.Where(m => m.Kind == "asr").ToArray();
+        var asrEntries = ModelCatalog.All.Where(m => m.Kind == "asr").ToArray();
+        AsrModelCombo.ItemsSource = asrEntries;
         AsrModelCombo.DisplayMemberPath = nameof(ModelEntry.DisplayName);
-        var asrEntry = ModelCatalog.All.FirstOrDefault(m => m.Kind == "asr" &&
-            (string.Equals(_working.AsrEngine, "whisper", StringComparison.OrdinalIgnoreCase)
-                ? m.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase)
-                : !m.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase) && _working.AsrModelPath.Contains(m.Files[0].FileName, StringComparison.OrdinalIgnoreCase)));
-        AsrModelCombo.SelectedItem = asrEntry ?? ModelCatalog.All.First(m => m.Kind == "asr");
+        AsrModelCombo.SelectedItem = asrEntries.FirstOrDefault(m => ModelMatches(m, _working.AsrEngine, _working.AsrModelPath))
+            ?? asrEntries[0];
         UpdateAsrPaths();
 
         LlmModelCombo.ItemsSource = ModelCatalog.All.Where(m => m.Kind == "llm").ToArray();
@@ -86,6 +84,24 @@ public sealed partial class SettingsWindow : Window
         => !string.IsNullOrWhiteSpace(path) &&
            entry.Files.Any(f => path.EndsWith(f.FileName, StringComparison.OrdinalIgnoreCase));
 
+    private static bool ModelMatches(ModelEntry entry, string engine, string path)
+    {
+        var pathMatches = entry.Archive is { } archive
+            ? path.Contains(archive.ExtractedDirectory, StringComparison.OrdinalIgnoreCase)
+            : entry.Files.Length > 0 && path.Contains(entry.Files[0].FileName, StringComparison.OrdinalIgnoreCase);
+
+        if (!pathMatches) return false;
+
+        var expectedEngine = entry.Id switch
+        {
+            var id when id.StartsWith("zipformer", StringComparison.OrdinalIgnoreCase) => "zipformer",
+            var id when id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase) => "whisper",
+            _ => "qwen3-asr",
+        };
+
+        return string.Equals(engine, expectedEngine, StringComparison.OrdinalIgnoreCase);
+    }
+
     private void UpdateAsrPaths()
     {
         AsrPathText.Text = string.IsNullOrWhiteSpace(_working.AsrModelPath)
@@ -120,16 +136,22 @@ public sealed partial class SettingsWindow : Window
     {
         if (_initializing || AsrModelCombo.SelectedItem is not ModelEntry entry) return;
 
-        if (entry.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase))
+        if (entry.Id.StartsWith("zipformer", StringComparison.OrdinalIgnoreCase))
+        {
+            _working.AsrEngine = "zipformer";
+            _working.AsrModelPath = entry.PrimaryPath;
+            _working.AsrMmprojPath = "";
+        }
+        else if (entry.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase))
         {
             _working.AsrEngine = "whisper";
-            _working.AsrModelPath = ModelCatalog.PathOf(entry.Files[0].FileName);
+            _working.AsrModelPath = entry.PrimaryPath;
             _working.AsrMmprojPath = "";
         }
         else
         {
             _working.AsrEngine = "qwen3-asr";
-            _working.AsrModelPath = ModelCatalog.PathOf(entry.Files[0].FileName);
+            _working.AsrModelPath = entry.PrimaryPath;
             _working.AsrMmprojPath = entry.Files.Length > 1 ? ModelCatalog.PathOf(entry.Files[1].FileName) : "";
         }
 
@@ -147,7 +169,32 @@ public sealed partial class SettingsWindow : Window
     {
         if (_initializing) return;
         _working.FontSize = e.NewValue;
+        ApplyLiveAppearance();
         UpdateLabels();
+    }
+
+    private void OpacitySlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (_initializing) return;
+        _working.PanelOpacity = e.NewValue;
+        ApplyLiveAppearance();
+        UpdateLabels();
+    }
+
+    private void ShowOriginalCheck_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_initializing) return;
+        _working.ShowOriginal = ShowOriginalCheck.IsChecked == true;
+        ApplyLiveAppearance();
+    }
+
+    /// <summary>Preview appearance changes on the overlay while the settings window is open.</summary>
+    private void ApplyLiveAppearance()
+    {
+        App.Ui.ShowOriginal = _working.ShowOriginal;
+        App.Ui.TranslationFontSize = _working.FontSize;
+        App.Ui.OriginalFontSize = Math.Max(10, Math.Round(_working.FontSize * 0.64));
+        App.Ui.PanelOpacity = _working.PanelOpacity;
     }
 
     private void MaxLinesSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
@@ -253,8 +300,13 @@ public sealed partial class SettingsWindow : Window
             DownloadText.Text = $"下载完成: {entry.DisplayName}";
             if (entry.Kind == "asr")
             {
-                _working.AsrEngine = entry.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase) ? "whisper" : "qwen3-asr";
-                _working.AsrModelPath = ModelCatalog.PathOf(entry.Files[0].FileName);
+                _working.AsrEngine = entry.Id switch
+                {
+                    var id when id.StartsWith("zipformer", StringComparison.OrdinalIgnoreCase) => "zipformer",
+                    var id when id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase) => "whisper",
+                    _ => "qwen3-asr",
+                };
+                _working.AsrModelPath = entry.PrimaryPath;
                 _working.AsrMmprojPath = entry.Files.Length > 1 ? ModelCatalog.PathOf(entry.Files[1].FileName) : "";
                 UpdateAsrPaths();
             }

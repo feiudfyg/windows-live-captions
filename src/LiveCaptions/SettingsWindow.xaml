@@ -81,14 +81,14 @@
                         </StackPanel>
                         <StackPanel Grid.Column="1" Spacing="2">
                             <TextBlock x:Name="OpacityLabel" Text="面板不透明度" />
-                            <Slider x:Name="OpacitySlider" Minimum="0.2" Maximum="1.0" StepFrequency="0.05" />
+                            <Slider x:Name="OpacitySlider" Minimum="0.2" Maximum="1.0" StepFrequency="0.05" ValueChanged="OpacitySlider_ValueChanged" />
                         </StackPanel>
                         <StackPanel Grid.Row="1" Spacing="2">
                             <TextBlock x:Name="LinesLabel" Text="最大显示行数" />
                             <Slider x:Name="MaxLinesSlider" Minimum="1" Maximum="6" StepFrequency="1" ValueChanged="MaxLinesSlider_ValueChanged" />
                         </StackPanel>
                         <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
-                            <CheckBox x:Name="ShowOriginalCheck" Content="显示识别原文" />
+                            <CheckBox x:Name="ShowOriginalCheck" Content="显示识别原文" Checked="ShowOriginalCheck_Toggled" Unchecked="ShowOriginalCheck_Toggled" />
                             <CheckBox x:Name="AlwaysOnTopCheck" Content="窗口置顶" />
                         </StackPanel>
                     </Grid>

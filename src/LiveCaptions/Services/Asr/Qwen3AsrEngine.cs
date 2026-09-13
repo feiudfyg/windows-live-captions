@@ -76,8 +76,19 @@ public sealed class Qwen3AsrEngine : IAsrEngine
 
         _inferParams = new InferenceParams
         {
-            MaxTokens = 1024,
-            SamplingPipeline = new GreedySamplingPipeline(),
+            MaxTokens = 256,
+            // TopK=1 with temperature 1 is greedy decoding, but unlike
+            // GreedySamplingPipeline it still applies the repetition penalty, which
+            // prevents the model from looping on hard/noisy audio.
+            SamplingPipeline = new DefaultSamplingPipeline
+            {
+                Temperature = 1f,
+                TopK = 1,
+                RepeatPenalty = 1.2f,
+                PenaltyCount = 256,
+                FrequencyPenalty = 0.2f,
+                PenalizeNewline = false,
+            },
             AntiPrompts = ["<|im_end|>", "<|im_start|>"],
         };
 
@@ -109,6 +120,10 @@ public sealed class Qwen3AsrEngine : IAsrEngine
 
             var prompt = BuildPrompt(language, context);
             var sb = new StringBuilder();
+
+            // Cap generation roughly to what the audio can contain.
+            var seconds = samples.Length / (double)rate;
+            _inferParams!.MaxTokens = Math.Clamp((int)(seconds * 8) + 32, 48, 384);
 
             var sw = Stopwatch.StartNew();
             await foreach (var token in executor.InferAsync(prompt, _inferParams!, ct).ConfigureAwait(false))
@@ -158,6 +173,12 @@ public sealed class Qwen3AsrEngine : IAsrEngine
         var markerIndex = text.IndexOf("<asr_text>", StringComparison.OrdinalIgnoreCase);
         if (markerIndex >= 0)
         {
+            var detected = text[..markerIndex].Trim();
+            if (detected.Length > 0)
+            {
+                Log.Write($"[asr] {detected}");
+            }
+
             text = text[(markerIndex + "<asr_text>".Length)..];
         }
         else
@@ -182,7 +203,7 @@ public sealed class Qwen3AsrEngine : IAsrEngine
             }
         }
 
-        return text.Trim();
+        return TextGuards.TruncateRepetition(TextGuards.Normalize(text));
     }
 
     public void Dispose()
