@@ -166,16 +166,25 @@ internal static class Program
         config.ModelConfig.Provider = "cpu";
         config.DecodingMethod = "greedy_search";
 
-        var sw = Stopwatch.StartNew();
+        var loadWatch = Stopwatch.StartNew();
         using var recognizer = new SherpaOnnx.OfflineRecognizer(config);
-        using var stream = recognizer.CreateStream();
-        stream.AcceptWaveform(16000, samples);
-        recognizer.Decode(stream);
-        sw.Stop();
+        loadWatch.Stop();
 
-        var text = stream.Result.Text.Trim();
+        string text = "";
+        long decodeMs = 0;
+        for (var i = 0; i < 2; i++)
+        {
+            using var stream = recognizer.CreateStream();
+            stream.AcceptWaveform(16000, samples);
+            var sw = Stopwatch.StartNew();
+            recognizer.Decode(stream);
+            sw.Stop();
+            decodeMs = sw.ElapsedMilliseconds;
+            text = stream.Result.Text.Trim();
+        }
+
         Console.WriteLine();
-        Console.WriteLine($"[asr] {sw.ElapsedMilliseconds} ms ({(samples.Length / 16000.0) / (sw.ElapsedMilliseconds / 1000.0):0.00}x realtime)");
+        Console.WriteLine($"[asr] load {loadWatch.ElapsedMilliseconds} ms, decode {decodeMs} ms ({(samples.Length / 16000.0) / (decodeMs / 1000.0):0.0}x realtime)");
         Console.WriteLine($"[text] {text}");
         return 0;
     }

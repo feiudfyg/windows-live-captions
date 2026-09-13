@@ -17,6 +17,9 @@ public sealed class AudioCaptureService : IDisposable
     private ISampleProvider? _chain;
     private CancellationTokenSource? _cts;
     private Task? _pump;
+    private string? _deviceId;
+    private DateTime _nextDeviceCheck = DateTime.UtcNow.AddSeconds(5);
+    private int _restarting;
 
     public event Action<float[], int>? SamplesAvailable;
     public event Action<string>? Failed;
@@ -34,6 +37,7 @@ public sealed class AudioCaptureService : IDisposable
             var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
             var device = enumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
             DeviceName = device.FriendlyName;
+            _deviceId = device.ID;
 
             _capture = new WasapiLoopbackCapture(device);
 
@@ -105,6 +109,15 @@ public sealed class AudioCaptureService : IDisposable
         {
             try
             {
+                if (DateTime.UtcNow >= _nextDeviceCheck)
+                {
+                    _nextDeviceCheck = DateTime.UtcNow.AddSeconds(5);
+                    if (CheckDeviceChanged())
+                    {
+                        break; // a restart is in flight; this pump instance is done
+                    }
+                }
+
                 var read = chain.Read(buffer, 0, buffer.Length);
                 if (read > 0)
                 {
@@ -131,6 +144,55 @@ public sealed class AudioCaptureService : IDisposable
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Loopback capture is bound to one device instance; when the user switches
+    /// headphones/speakers the stream goes silent forever. Poll the default
+    /// render device and rebuild the capture when it changes.
+    /// </summary>
+    private bool CheckDeviceChanged()
+    {
+        if (Interlocked.CompareExchange(ref _restarting, 1, 0) != 0) return false;
+
+        var changed = false;
+        try
+        {
+            using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+            using var device = enumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+            changed = _deviceId is not null &&
+                      !string.Equals(device.ID, _deviceId, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            // Device enumeration is best-effort.
+        }
+
+        if (!changed)
+        {
+            Interlocked.Exchange(ref _restarting, 0);
+            return false;
+        }
+
+        Log.Write("[audio] default playback device changed, restarting capture");
+        Task.Run(() =>
+        {
+            try
+            {
+                Stop();
+                Start();
+            }
+            catch (Exception ex)
+            {
+                Failed?.Invoke($"音频设备切换失败: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _restarting, 0);
+            }
+        });
+
+        return true;
     }
 
     public void Stop()
