@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="LiveCaptions.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Padding="20,16,20,8">
+            <StackPanel Spacing="18" MaxWidth="720" HorizontalAlignment="Left">
+
+                <!-- Speech recognition -->
+                <StackPanel Spacing="8">
+                    <TextBlock Text="语音识别" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Text="识别模型" />
+                    <ComboBox x:Name="AsrModelCombo" HorizontalAlignment="Stretch" SelectionChanged="AsrModelCombo_SelectionChanged" />
+                    <TextBlock x:Name="AsrPathText" FontSize="11" Opacity="0.6" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="AsrDownloadButton" Content="下载所选模型" Click="AsrDownloadButton_Click" />
+                        <Button Content="选择本地模型文件…" Click="BrowseAsrModel_Click" />
+                    </StackPanel>
+                    <TextBlock x:Name="MmprojPathText" FontSize="11" Opacity="0.6" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <!-- Translation -->
+                <StackPanel Spacing="8">
+                    <TextBlock Text="翻译 (本地 LLM)" FontSize="16" FontWeight="SemiBold" />
+                    <CheckBox x:Name="TranslateCheck" Content="启用翻译（关闭后仅显示识别原文）" />
+                    <TextBlock Text="翻译模型" />
+                    <ComboBox x:Name="LlmModelCombo" HorizontalAlignment="Stretch" SelectionChanged="LlmModelCombo_SelectionChanged" />
+                    <TextBlock x:Name="LlmPathText" FontSize="11" Opacity="0.6" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="LlmDownloadButton" Content="下载所选模型" Click="LlmDownloadButton_Click" />
+                        <Button Content="选择本地模型文件…" Click="BrowseLlmModel_Click" />
+                    </StackPanel>
+                    <CheckBox x:Name="TranslatePartialsCheck" Content="翻译识别中的部分结果（延迟更低，但可能出现重译）" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="GPU 后端" VerticalAlignment="Center" />
+                        <ComboBox x:Name="GpuBackendCombo" Width="220" />
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Languages -->
+                <StackPanel Spacing="8">
+                    <TextBlock Text="语言" FontSize="16" FontWeight="SemiBold" />
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="音频语言（源）" />
+                            <ComboBox x:Name="SourceLangCombo" HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock Text="字幕语言（目标）" />
+                            <ComboBox x:Name="TargetLangCombo" HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+
+                <!-- Appearance -->
+                <StackPanel Spacing="8">
+                    <TextBlock Text="外观" FontSize="16" FontWeight="SemiBold" />
+                    <Grid ColumnSpacing="12" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock x:Name="FontSizeLabel" Text="字幕字号" />
+                            <Slider x:Name="FontSizeSlider" Minimum="12" Maximum="44" StepFrequency="1" ValueChanged="FontSizeSlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock x:Name="OpacityLabel" Text="面板不透明度" />
+                            <Slider x:Name="OpacitySlider" Minimum="0.2" Maximum="1.0" StepFrequency="0.05" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Spacing="2">
+                            <TextBlock x:Name="LinesLabel" Text="最大显示行数" />
+                            <Slider x:Name="MaxLinesSlider" Minimum="1" Maximum="6" StepFrequency="1" ValueChanged="MaxLinesSlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
+                            <CheckBox x:Name="ShowOriginalCheck" Content="显示识别原文" />
+                            <CheckBox x:Name="AlwaysOnTopCheck" Content="窗口置顶" />
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+
+                <!-- Audio pipeline -->
+                <StackPanel Spacing="8">
+                    <TextBlock Text="识别灵敏度" FontSize="16" FontWeight="SemiBold" />
+                    <Grid ColumnSpacing="12" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock x:Name="VadLabel" Text="静音阈值（越低越灵敏）" />
+                            <Slider x:Name="VadSlider" Minimum="0.002" Maximum="0.04" StepFrequency="0.001" ValueChanged="VadSlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock x:Name="PartialLabel" Text="部分结果间隔 (毫秒)" />
+                            <Slider x:Name="PartialSlider" Minimum="600" Maximum="4000" StepFrequency="100" ValueChanged="PartialSlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Spacing="2">
+                            <TextBlock x:Name="SilenceLabel" Text="断句静音时长 (毫秒)" />
+                            <Slider x:Name="SilenceSlider" Minimum="300" Maximum="2000" StepFrequency="50" ValueChanged="SilenceSlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
+                            <TextBlock x:Name="MaxUttLabel" Text="单句最长时长 (秒)" />
+                            <Slider x:Name="MaxUttSlider" Minimum="6" Maximum="60" StepFrequency="1" ValueChanged="MaxUttSlider_ValueChanged" />
+                        </StackPanel>
+                    </Grid>
+                    <CheckBox x:Name="AutoStartCheck" Content="启动应用后自动开始监听" />
+                </StackPanel>
+
+                <!-- Download progress -->
+                <StackPanel x:Name="DownloadPanel" Spacing="4" Visibility="Collapsed">
+                    <TextBlock x:Name="DownloadText" FontSize="12" />
+                    <ProgressBar x:Name="DownloadBar" Minimum="0" Maximum="1" />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Grid Grid.Row="1" Padding="20,8,20,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="StatusText" FontSize="12" Opacity="0.7" VerticalAlignment="Center" TextWrapping="Wrap" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="SaveButton" Content="保存并应用" Style="{StaticResource AccentButtonStyle}" Click="SaveButton_Click" />
+                <Button Content="关闭" Click="CloseButton_Click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

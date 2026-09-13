@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>LiveCaptions.SmokeTest</RootNamespace>
+    <AssemblyName>LiveCaptions.SmokeTest</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="LLamaSharp" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime.Cuda" Version="1.9.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Cuda12Native Include="$(MSBuildProjectDirectory)\..\..\third_party\cuda12\x64\*.dll" />
+  </ItemGroup>
+
+  <Target Name="CopyCuda12Runtime" AfterTargets="Build" Condition="'@(Cuda12Native)' != ''">
+    <Copy SourceFiles="@(Cuda12Native)" DestinationFolder="$(OutDir)runtimes\win-x64\native\cuda12" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\third_party\cuda12\x64\cudart64_12.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="Exists('$(MSBuildProjectDirectory)\..\..\third_party\cuda12\x64\cudart64_12.dll')" />
+  </Target>
+
+  <Target Name="CompleteCuda12Folder" AfterTargets="Build" Condition="Exists('$(OutDir)runtimes\win-x64\native\cuda12\ggml.dll') And Exists('$(OutDir)runtimes\win-x64\native\avx2\ggml-cpu.dll')">
+    <Copy SourceFiles="$(OutDir)runtimes\win-x64\native\avx2\ggml-cpu.dll" DestinationFiles="$(OutDir)runtimes\win-x64\native\cuda12\ggml-cpu.dll" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

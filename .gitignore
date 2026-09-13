@@ -1,0 +1,59 @@
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.pdb
+*.ilk
+*.meta
+*.obj
+*.iobj
+
+# NuGet
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+*.nuget.props
+*.nuget.targets
+.nuget/
+
+# Models (large binaries, downloaded on demand)
+models/
+*.bin
+*.gguf
+*.onnx
+*.safetensors
+
+# CUDA 12 runtime redistributables (fetched by scripts/fetch-cuda12-runtime.ps1)
+third_party/cuda12/x64/
+third_party/cuda12/zips/
+
+# Misc
+*.log
+*.tmp
+*.part
+TestResults/
+[Dd]ocProject/
+*.pfx
+*.cer
+BenchmarkDotNet.Artifacts/

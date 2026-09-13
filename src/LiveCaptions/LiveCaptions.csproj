@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>LiveCaptions</RootNamespace>
+    <AssemblyName>LiveCaptions</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="LLamaSharp" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime.Cuda" Version="1.9.1" />
+  </ItemGroup>
+
+  <!--
+    Ship the CUDA 12 runtime next to the Cuda12 backend when the local copy
+    exists (fetch it with scripts/fetch-cuda12-runtime.ps1). The llama.cpp
+    Cuda12 native library links against cudart64_12/cublas64_12/cublasLt64_12,
+    which the CUDA 13 toolkit does not provide.
+  -->
+  <ItemGroup>
+    <Cuda12Native Include="$(MSBuildProjectDirectory)\..\..\third_party\cuda12\x64\*.dll" />
+  </ItemGroup>
+
+  <Target Name="CopyCuda12Runtime" AfterTargets="Build" Condition="'@(Cuda12Native)' != ''">
+    <Copy SourceFiles="@(Cuda12Native)" DestinationFolder="$(OutDir)runtimes\win-x64\native\cuda12" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\third_party\cuda12\x64\cudart64_12.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="Exists('$(MSBuildProjectDirectory)\..\..\third_party\cuda12\x64\cudart64_12.dll')" />
+  </Target>
+
+  <!--
+    The Cuda12 backend's ggml.dll links against ggml-cpu.dll, which the CUDA
+    package does not ship (it lives in the CPU backend). Supply it from the
+    avx2 build so the cuda12 folder is self-contained.
+  -->
+  <Target Name="CompleteCuda12Folder" AfterTargets="Build" Condition="Exists('$(OutDir)runtimes\win-x64\native\cuda12\ggml.dll') And Exists('$(OutDir)runtimes\win-x64\native\avx2\ggml-cpu.dll')">
+    <Copy SourceFiles="$(OutDir)runtimes\win-x64\native\avx2\ggml-cpu.dll" DestinationFiles="$(OutDir)runtimes\win-x64\native\cuda12\ggml-cpu.dll" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
