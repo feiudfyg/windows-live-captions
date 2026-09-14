@@ -13,7 +13,7 @@ public sealed class SettingsService
 
     public AppSettings Settings { get; private set; } = new();
 
-    public string SettingsPath => Path.Combine(Settings.SettingsDirectory, "settings.json");
+    public string SettingsPath => AppPaths.SettingsPath;
 
     public void Load()
     {
@@ -37,7 +37,7 @@ public sealed class SettingsService
     {
         try
         {
-            Directory.CreateDirectory(Settings.SettingsDirectory);
+            Directory.CreateDirectory(AppPaths.DataRoot);
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(Settings, Options));
         }
         catch

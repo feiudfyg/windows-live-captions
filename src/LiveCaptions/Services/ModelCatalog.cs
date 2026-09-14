@@ -10,7 +10,8 @@ public sealed record ModelEntry(
     string DisplayName,
     string Description,
     ModelFile[] Files,
-    ModelArchive? Archive = null)
+    ModelArchive? Archive = null,
+    string? DefaultLanguage = null)
 {
     public bool Exists => Archive is not null
         ? Directory.Exists(Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory))
@@ -29,11 +30,8 @@ public sealed record ModelEntry(
 /// </summary>
 public static class ModelCatalog
 {
-    public static string ModelsDirectory { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "LiveCaptions", "models");
+    public static string ModelsDirectory { get; } = AppPaths.ModelsDirectory;
 
-    private const string QwenAsrRepo = "https://huggingface.co/ggml-org";
     private const string WhisperRepo = "https://huggingface.co/ggerganov/whisper.cpp";
     private const string HauhauRepo = "https://huggingface.co/HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive";
     private const string Qwen25Repo = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF";
@@ -43,11 +41,23 @@ public static class ModelCatalog
         "zipformer-ja",
         "asr",
         "Zipformer 日语 (ReazonSpeech)",
-        "RNN-T 流式架构的离线版：抗噪、不会复读退化，CPU 实时，适合日语视频",
+        "RNN-T 架构：抗噪、不会复读退化，CPU 实时（约 110× 实时），适合日语视频",
         [],
         new ModelArchive("sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01.tar.bz2",
             $"{SherpaRepo}/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01.tar.bz2",
-            "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01", 400_000_000));
+            "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01", 400_000_000),
+        "ja");
+
+    public static readonly ModelEntry CohereTranscribe = new(
+        "cohere-transcribe",
+        "asr",
+        "Cohere Transcribe 14 语言（SOTA）",
+        "2026 年 SOTA 多语言识别（含日语），需指定音频语言（本项默认日语），int8 约 2.7 GB",
+        [],
+        new ModelArchive("sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01.tar.bz2",
+            $"{SherpaRepo}/sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01.tar.bz2",
+            "sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01", 2_900_000_000),
+        "ja");
 
     public static readonly ModelEntry ZipformerZhEn = new(
         "zipformer-zh-en",
@@ -57,7 +67,8 @@ public static class ModelCatalog
         [],
         new ModelArchive("sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2",
             $"{SherpaRepo}/sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2",
-            "sherpa-onnx-zipformer-zh-en-2023-11-22", 330_000_000));
+            "sherpa-onnx-zipformer-zh-en-2023-11-22", 330_000_000),
+        "zh");
 
     public static readonly ModelEntry ZipformerCantonese = new(
         "zipformer-yue",
@@ -67,7 +78,8 @@ public static class ModelCatalog
         [],
         new ModelArchive("sherpa-onnx-zipformer-cantonese-2024-03-13.tar.bz2",
             $"{SherpaRepo}/sherpa-onnx-zipformer-cantonese-2024-03-13.tar.bz2",
-            "sherpa-onnx-zipformer-cantonese-2024-03-13", 330_000_000));
+            "sherpa-onnx-zipformer-cantonese-2024-03-13", 330_000_000),
+        "yue");
 
     public static readonly ModelEntry ZipformerKorean = new(
         "zipformer-ko",
@@ -77,31 +89,8 @@ public static class ModelCatalog
         [],
         new ModelArchive("sherpa-onnx-zipformer-korean-2024-06-24.tar.bz2",
             $"{SherpaRepo}/sherpa-onnx-zipformer-korean-2024-06-24.tar.bz2",
-            "sherpa-onnx-zipformer-korean-2024-06-24", 330_000_000));
-
-    public static readonly ModelEntry QwenAsr17B = new(
-        "qwen3-asr-1.7b",
-        "asr",
-        "Qwen3-ASR-1.7B (推荐)",
-        "业界最强开源 ASR 之一，支持 52 种语言/方言，GPU 加速",
-        [
-            new ModelFile("Qwen3-ASR-1.7B-Q8_0.gguf",
-                $"{QwenAsrRepo}/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B-Q8_0.gguf", 2_173_000_000),
-            new ModelFile("mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
-                $"{QwenAsrRepo}/Qwen3-ASR-1.7B-GGUF/resolve/main/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf", 355_000_000),
-        ]);
-
-    public static readonly ModelEntry QwenAsr06B = new(
-        "qwen3-asr-0.6b",
-        "asr",
-        "Qwen3-ASR-0.6B (轻量)",
-        "0.6B 版本，速度更快、精度略低，适合低显存设备",
-        [
-            new ModelFile("Qwen3-ASR-0.6B-Q8_0.gguf",
-                $"{QwenAsrRepo}/Qwen3-ASR-0.6B-GGUF/resolve/main/Qwen3-ASR-0.6B-Q8_0.gguf", 806_000_000),
-            new ModelFile("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
-                $"{QwenAsrRepo}/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf", 215_000_000),
-        ]);
+            "sherpa-onnx-zipformer-korean-2024-06-24", 330_000_000),
+        "ko");
 
     public static readonly ModelEntry WhisperTurbo = new(
         "whisper-large-v3-turbo",
@@ -145,14 +134,16 @@ public static class ModelCatalog
 
     public static readonly ModelEntry[] All =
     [
-        QwenAsr17B, QwenAsr06B, WhisperTurbo, ZipformerJa, ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
+        ZipformerJa, CohereTranscribe, ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
+        ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
         LlmQwen35Q8, LlmQwen35Q4, LlmQwen25Small,
     ];
 
     public static string PathOf(string fileName) => Path.Combine(ModelsDirectory, fileName);
 
-    public static string DefaultAsrModel => PathOf(QwenAsr17B.Files[0].FileName);
-    public static string DefaultAsrMmproj => PathOf(QwenAsr17B.Files[1].FileName);
     public static string DefaultWhisperModel => PathOf(WhisperTurbo.Files[0].FileName);
+
+    /// <summary>Default offline model (Japanese Zipformer - the recommended engine).</summary>
+    public static string DefaultSherpaModel => ZipformerJa.PrimaryPath;
     public static string DefaultLlmModel => PathOf(LlmQwen35Q8.Files[0].FileName);
 }

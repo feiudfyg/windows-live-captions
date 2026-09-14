@@ -44,6 +44,16 @@ models/
 *.onnx
 *.safetensors
 
+# Local runtime data (models, settings, logs, dumps)
+data/
+
+# Test media the user drops into the repo root
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+
 # CUDA 12 runtime redistributables (fetched by scripts/fetch-cuda12-runtime.ps1)
 third_party/cuda12/x64/
 third_party/cuda12/zips/

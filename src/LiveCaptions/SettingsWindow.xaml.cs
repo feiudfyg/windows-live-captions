@@ -38,6 +38,7 @@ public sealed partial class SettingsWindow : Window
         AsrModelCombo.DisplayMemberPath = nameof(ModelEntry.DisplayName);
         AsrModelCombo.SelectedItem = asrEntries.FirstOrDefault(m => ModelMatches(m, _working.AsrEngine, _working.AsrModelPath))
             ?? asrEntries[0];
+        ApplyAsrEntry((ModelEntry)AsrModelCombo.SelectedItem);
         UpdateAsrPaths();
 
         LlmModelCombo.ItemsSource = ModelCatalog.All.Where(m => m.Kind == "llm").ToArray();
@@ -56,6 +57,13 @@ public sealed partial class SettingsWindow : Window
 
         TranslateCheck.IsChecked = _working.TranslateEnabled;
         TranslatePartialsCheck.IsChecked = _working.TranslatePartials;
+
+        LlmBackendCombo.ItemsSource = new[] { "本地 GGUF（内置 llama.cpp）", "HTTP 服务（LM Studio 等）" };
+        LlmBackendCombo.SelectedIndex = _working.LlmBackend.Equals("http", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        LlmEndpointBox.Text = _working.LlmEndpoint;
+        LlmEndpointModelBox.Text = _working.LlmEndpointModel;
+        LlmDisableThinkingCheck.IsChecked = _working.LlmHttpDisableThinking;
+        UpdateBackendVisibility();
         ShowOriginalCheck.IsChecked = _working.ShowOriginal;
         AlwaysOnTopCheck.IsChecked = _working.AlwaysOnTop;
         AutoStartCheck.IsChecked = _working.AutoStartCapture;
@@ -94,12 +102,24 @@ public sealed partial class SettingsWindow : Window
 
         var expectedEngine = entry.Id switch
         {
-            var id when id.StartsWith("zipformer", StringComparison.OrdinalIgnoreCase) => "zipformer",
+            var id when id.StartsWith("zipformer", StringComparison.OrdinalIgnoreCase) => "sherpa",
+            var id when id.StartsWith("cohere", StringComparison.OrdinalIgnoreCase) => "sherpa",
             var id when id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase) => "whisper",
-            _ => "qwen3-asr",
+            _ => "sherpa",
         };
 
-        return string.Equals(engine, expectedEngine, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(engine, expectedEngine, StringComparison.OrdinalIgnoreCase) ||
+               // legacy value from before the engine was renamed to "sherpa"
+               (expectedEngine == "sherpa" && engine.Equals("zipformer", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Language-specific models pin the source language when selected.</summary>
+    private void ApplyDefaultLanguage(ModelEntry entry)
+    {
+        if (entry.DefaultLanguage is not { } code) return;
+        if (SourceLangCombo.SelectedItem is not LanguageOption option || option.Code == code) return;
+
+        SourceLangCombo.SelectedItem = LanguageCatalog.FindSource(code);
     }
 
     private void UpdateAsrPaths()
@@ -135,14 +155,14 @@ public sealed partial class SettingsWindow : Window
     private void AsrModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing || AsrModelCombo.SelectedItem is not ModelEntry entry) return;
+        ApplyAsrEntry(entry);
+        UpdateAsrPaths();
+    }
 
-        if (entry.Id.StartsWith("zipformer", StringComparison.OrdinalIgnoreCase))
-        {
-            _working.AsrEngine = "zipformer";
-            _working.AsrModelPath = entry.PrimaryPath;
-            _working.AsrMmprojPath = "";
-        }
-        else if (entry.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase))
+    /// <summary>Map a catalog entry to the engine id, model path and default language.</summary>
+    private void ApplyAsrEntry(ModelEntry entry)
+    {
+        if (entry.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase))
         {
             _working.AsrEngine = "whisper";
             _working.AsrModelPath = entry.PrimaryPath;
@@ -150,12 +170,25 @@ public sealed partial class SettingsWindow : Window
         }
         else
         {
-            _working.AsrEngine = "qwen3-asr";
+            _working.AsrEngine = "sherpa";
             _working.AsrModelPath = entry.PrimaryPath;
-            _working.AsrMmprojPath = entry.Files.Length > 1 ? ModelCatalog.PathOf(entry.Files[1].FileName) : "";
+            _working.AsrMmprojPath = "";
+            ApplyDefaultLanguage(entry);
         }
+    }
 
-        UpdateAsrPaths();
+    private void LlmBackendCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing) return;
+        UpdateBackendVisibility();
+    }
+
+    private void UpdateBackendVisibility()
+    {
+        var http = LlmBackendCombo.SelectedIndex == 1;
+        HttpBackendPanel.Visibility = http ? Visibility.Visible : Visibility.Collapsed;
+        LlmModelCombo.IsEnabled = !http;
+        LlmDownloadButton.IsEnabled = !http;
     }
 
     private void LlmModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -302,9 +335,8 @@ public sealed partial class SettingsWindow : Window
             {
                 _working.AsrEngine = entry.Id switch
                 {
-                    var id when id.StartsWith("zipformer", StringComparison.OrdinalIgnoreCase) => "zipformer",
                     var id when id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase) => "whisper",
-                    _ => "qwen3-asr",
+                    _ => "sherpa",
                 };
                 _working.AsrModelPath = entry.PrimaryPath;
                 _working.AsrMmprojPath = entry.Files.Length > 1 ? ModelCatalog.PathOf(entry.Files[1].FileName) : "";
@@ -337,6 +369,10 @@ public sealed partial class SettingsWindow : Window
     {
         _working.TranslateEnabled = TranslateCheck.IsChecked == true;
         _working.TranslatePartials = TranslatePartialsCheck.IsChecked == true;
+        _working.LlmBackend = LlmBackendCombo.SelectedIndex == 1 ? "http" : "llama";
+        _working.LlmEndpoint = string.IsNullOrWhiteSpace(LlmEndpointBox.Text) ? "http://127.0.0.1:1234/v1" : LlmEndpointBox.Text.Trim();
+        _working.LlmEndpointModel = LlmEndpointModelBox.Text.Trim();
+        _working.LlmHttpDisableThinking = LlmDisableThinkingCheck.IsChecked == true;
         _working.ShowOriginal = ShowOriginalCheck.IsChecked == true;
         _working.AlwaysOnTop = AlwaysOnTopCheck.IsChecked == true;
         _working.AutoStartCapture = AutoStartCheck.IsChecked == true;

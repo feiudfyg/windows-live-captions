@@ -37,6 +37,17 @@
                         <Button x:Name="LlmDownloadButton" Content="下载所选模型" Click="LlmDownloadButton_Click" />
                         <Button Content="选择本地模型文件…" Click="BrowseLlmModel_Click" />
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="翻译后端" VerticalAlignment="Center" />
+                        <ComboBox x:Name="LlmBackendCombo" Width="280" SelectionChanged="LlmBackendCombo_SelectionChanged" />
+                    </StackPanel>
+                    <StackPanel x:Name="HttpBackendPanel" Spacing="4" Visibility="Collapsed">
+                        <TextBlock Text="服务地址（OpenAI 兼容，如 LM Studio 本地服务）" />
+                        <TextBox x:Name="LlmEndpointBox" PlaceholderText="http://127.0.0.1:1234/v1" />
+                        <TextBlock Text="模型名（留空则使用服务端当前加载的模型）" />
+                        <TextBox x:Name="LlmEndpointModelBox" PlaceholderText="留空自动" />
+                        <CheckBox x:Name="LlmDisableThinkingCheck" Content="禁用思考模式（发送 enable_thinking=false）" />
+                    </StackPanel>
                     <CheckBox x:Name="TranslatePartialsCheck" Content="翻译识别中的部分结果（延迟更低，但可能出现重译）" />
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock Text="GPU 后端" VerticalAlignment="Center" />

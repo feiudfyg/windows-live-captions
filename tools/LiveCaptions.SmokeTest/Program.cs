@@ -19,12 +19,44 @@ namespace LiveCaptions.SmokeTest;
 /// </summary>
 internal static class Program
 {
+    private static string? TextOut;
+
+    private static void WriteResult(string text)
+    {
+        Console.WriteLine($"[text] {text}");
+        if (TextOut is null) return;
+
+        try
+        {
+            File.AppendAllText(TextOut, text + Environment.NewLine, Encoding.UTF8);
+        }
+        catch
+        {
+            // best effort
+        }
+    }
     private static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
+
+        // Optional: write recognised/translated text to a UTF-8 file so callers
+        // do not have to fight console code pages.
+        var textOut = Environment.GetEnvironmentVariable("SMOKE_TEXT_OUT");
+        if (!string.IsNullOrEmpty(textOut))
+        {
+            TextOut = textOut;
+            try
+            {
+                File.AppendAllText(TextOut, $"\n### {string.Join(' ', args.Select(a => Path.GetFileName(a)))}\n", Encoding.UTF8);
+            }
+            catch
+            {
+                // best effort
+            }
+        }
+
         if (args.Length == 0)
         {
-            Console.WriteLine("usage: asr-qwen <model.gguf> <mmproj.gguf> <audio.wav> [language]");
             Console.WriteLine("       asr-whisper <model.bin> <audio.wav> [language]");
             Console.WriteLine("       mt <model.gguf> <text> <target-language-name>");
             return 1;
@@ -35,9 +67,8 @@ internal static class Program
             return args[0] switch
             {
                 "capture" when args.Length >= 2 => await CaptureAsync(int.Parse(args[1]), args.Length > 2 ? args[2] : null),
-                "asr-qwen" when args.Length >= 4 => await AsrQwenAsync(args[1], args[2], args[3], args.Length > 4 ? args[4] : null, args.Length > 5 ? args[5] : "auto"),
                 "asr-whisper" when args.Length >= 3 => await AsrWhisperAsync(args[1], args[2], args.Length > 3 ? args[3] : null),
-                "asr-zipformer" when args.Length >= 3 => AsrZipformer(args[1], args[2]),
+                "asr-zipformer" or "asr-sherpa" when args.Length >= 3 => AsrSherpa(args[1], args[2], args.Length > 3 ? args[3] : null),
                 "mt" when args.Length >= 4 => await TranslateAsync(args[1], args[2], args[3], args.Length > 4 ? args[4] : "auto"),
                 _ => throw new ArgumentException("unknown command or missing arguments"),
             };
@@ -145,8 +176,8 @@ internal static class Program
         }
     }
 
-    /// <summary>Zipformer (sherpa-onnx) ASR on a model directory.</summary>
-    private static int AsrZipformer(string modelDirectory, string wavPath)
+    /// <summary>sherpa-onnx ASR (Zipformer transducer or Cohere Transcribe) on a model directory.</summary>
+    private static int AsrSherpa(string modelDirectory, string wavPath, string? language)
     {
         var samples = LoadWav16kMono(wavPath);
 
@@ -155,12 +186,27 @@ internal static class Program
             .ThenBy(f => f.Length)
             .First();
 
+        var joiner = Directory.EnumerateFiles(modelDirectory, "joiner*.onnx").FirstOrDefault();
+        var isCohere = joiner is null;
+
         var config = new SherpaOnnx.OfflineRecognizerConfig();
         config.FeatConfig.SampleRate = 16000;
         config.FeatConfig.FeatureDim = 80;
-        config.ModelConfig.Transducer.Encoder = Find("encoder");
-        config.ModelConfig.Transducer.Decoder = Find("decoder");
-        config.ModelConfig.Transducer.Joiner = Find("joiner");
+        if (isCohere)
+        {
+            config.ModelConfig.CohereTranscribe.Encoder = Find("encoder");
+            config.ModelConfig.CohereTranscribe.Decoder = Find("decoder");
+            config.ModelConfig.CohereTranscribe.Language = string.IsNullOrWhiteSpace(language) || language == "auto" ? "ja" : language;
+            config.ModelConfig.CohereTranscribe.UsePunct = 1;
+            config.ModelConfig.CohereTranscribe.UseItn = 1;
+        }
+        else
+        {
+            config.ModelConfig.Transducer.Encoder = Find("encoder");
+            config.ModelConfig.Transducer.Decoder = Find("decoder");
+            config.ModelConfig.Transducer.Joiner = joiner!;
+        }
+
         config.ModelConfig.Tokens = Path.Combine(modelDirectory, "tokens.txt");
         config.ModelConfig.NumThreads = 4;
         config.ModelConfig.Provider = "cpu";
@@ -184,8 +230,8 @@ internal static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine($"[asr] load {loadWatch.ElapsedMilliseconds} ms, decode {decodeMs} ms ({(samples.Length / 16000.0) / (decodeMs / 1000.0):0.0}x realtime)");
-        Console.WriteLine($"[text] {text}");
+        Console.WriteLine($"[asr] {(isCohere ? "cohere" : "zipformer")} load {loadWatch.ElapsedMilliseconds} ms, decode {decodeMs} ms ({(samples.Length / 16000.0) / (decodeMs / 1000.0):0.0}x realtime)");
+        WriteResult(text);
         return 0;
     }
 
@@ -243,79 +289,6 @@ internal static class Program
 
         bw.Flush();
         return ms.ToArray();
-    }
-
-    private static async Task<int> AsrQwenAsync(string modelPath, string mmprojPath, string wavPath, string? language, string backend)
-    {
-        var samples = LoadWav16kMono(wavPath);
-
-        ConfigureBackend(backend);
-
-        var modelParams = new ModelParams(modelPath)
-        {
-            GpuLayerCount = 999,
-            ContextSize = 8192,
-            BatchSize = 2048,
-            UBatchSize = 512,
-        };
-
-        Console.WriteLine("[llama] loading LLM weights...");
-        var sw = Stopwatch.StartNew();
-        using var weights = await LLamaWeights.LoadFromFileAsync(modelParams);
-        Console.WriteLine($"[llama] weights loaded in {sw.ElapsedMilliseconds} ms");
-
-        using var context = weights.CreateContext(modelParams);
-        var mtmdParams = MtmdContextParams.Default();
-        mtmdParams.UseGpu = true;
-        mtmdParams.NThreads = Math.Min(16, Environment.ProcessorCount);
-        var marker = NativeApi.MtmdDefaultMarker() ?? "<media>";
-        mtmdParams.MediaMarker = marker;
-        Console.WriteLine($"[mtmd] default marker: '{marker}'");
-
-        Console.WriteLine("[mtmd] loading audio projector...");
-        using var mtmd = await MtmdWeights.LoadFromFileAsync(mmprojPath, weights, mtmdParams);
-        Console.WriteLine($"[mtmd] supports audio={mtmd.SupportsAudio}, sample rate={mtmd.SampleRate}");
-
-        var prompt = $"<|im_start|><|im_end|>\n<|im_start|>user\n{marker}" +
-                     (string.IsNullOrWhiteSpace(language) || language == "auto"
-                         ? "Transcribe the audio."
-                         : $"Transcribe the audio in {language}.") +
-                     "<|im_end|>\n<|im_start|>assistant\n";
-
-        context.NativeHandle.MemoryClear();
-        mtmd.ClearMedia();
-        using var embed = mtmd.LoadMedia(ToWav(samples, 16000));
-        var executor = new InteractiveExecutor(context, mtmd);
-        executor.Embeds.Clear();
-        executor.Embeds.Add(embed);
-
-        var inferenceParams = new InferenceParams
-        {
-            MaxTokens = 1024,
-            SamplingPipeline = new GreedySamplingPipeline(),
-            AntiPrompts = ["<|im_end|>", "<|im_start|>"],
-        };
-
-        Console.WriteLine("[asr] transcribing...");
-        sw.Restart();
-        var sb = new StringBuilder();
-        await foreach (var token in executor.InferAsync(prompt, inferenceParams))
-        {
-            sb.Append(token);
-        }
-
-        sw.Stop();
-        var text = sb.ToString().Trim();
-        var markerIndex = text.IndexOf("<asr_text>", StringComparison.OrdinalIgnoreCase);
-        if (markerIndex >= 0)
-        {
-            text = text[(markerIndex + "<asr_text>".Length)..].Trim();
-        }
-
-        Console.WriteLine();
-        Console.WriteLine($"[asr] {sw.ElapsedMilliseconds} ms ({(samples.Length / 16000.0) / (sw.ElapsedMilliseconds / 1000.0):0.00}x realtime)");
-        Console.WriteLine($"[text] {text}");
-        return 0;
     }
 
     private static async Task<int> AsrWhisperAsync(string modelPath, string wavPath, string? language)
@@ -404,7 +377,7 @@ internal static class Program
         sw.Stop();
         Console.WriteLine();
         Console.WriteLine($"[mt] first token {firstTokenAt} ms, total {sw.ElapsedMilliseconds} ms");
-        Console.WriteLine($"[text] {sb.ToString().Trim()}");
+        WriteResult(sb.ToString().Trim());
         return 0;
     }
 }

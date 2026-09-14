@@ -24,7 +24,7 @@ public sealed partial class MainWindow : Window
     private AudioCaptureService? _capture;
     private CaptionPipeline? _pipeline;
     private IAsrEngine? _asr;
-    private TranslationService? _translator;
+    private ITranslator? _translator;
     private SettingsWindow? _settingsWindow;
 
     private bool _busy;
@@ -137,20 +137,31 @@ public sealed partial class MainWindow : Window
             _asr = asr;
             SetStatus($"语音识别就绪 · {asr.Name} ({asr.Backend})");
 
-            TranslationService? translator = null;
+            ITranslator? translator = null;
             if (App.Settings.TranslateEnabled)
             {
-                var llmPath = ResolveLlmPath();
-                if (File.Exists(llmPath))
+                if (App.Settings.LlmBackend.Equals("http", StringComparison.OrdinalIgnoreCase))
                 {
-                    SetStatus("正在加载翻译模型…");
-                    translator = new TranslationService(llmPath, App.Settings);
-                    await Task.Run(() => translator.LoadAsync()).ConfigureAwait(true);
-                    SetStatus($"翻译就绪 · {translator.ModelName} ({translator.Backend})");
+                    SetStatus("正在连接翻译服务…");
+                    var httpTranslator = new HttpTranslationService(App.Settings);
+                    await Task.Run(() => httpTranslator.LoadAsync()).ConfigureAwait(true);
+                    translator = httpTranslator;
+                    SetStatus($"翻译就绪 · {httpTranslator.ModelName} ({httpTranslator.Backend})");
                 }
                 else
                 {
-                    SetStatus("未找到翻译模型，请在设置中下载（本次仅显示原文）");
+                    var llmPath = ResolveLlmPath();
+                    if (File.Exists(llmPath))
+                    {
+                        SetStatus("正在加载翻译模型…");
+                        translator = new TranslationService(llmPath, App.Settings);
+                        await Task.Run(() => translator.LoadAsync()).ConfigureAwait(true);
+                        SetStatus($"翻译就绪 · {translator.ModelName} ({translator.Backend})");
+                    }
+                    else
+                    {
+                        SetStatus("未找到翻译模型，请在设置中下载（本次仅显示原文）");
+                    }
                 }
             }
 
@@ -220,21 +231,20 @@ public sealed partial class MainWindow : Window
             return new WhisperAsrEngine(path, s.WhisperUseCuda);
         }
 
-        if (string.Equals(s.AsrEngine, "zipformer", StringComparison.OrdinalIgnoreCase))
+        // sherpa-onnx models (Zipformer / Cohere Transcribe). Legacy settings values
+        // ("zipformer", "qwen3-asr") fall through to this branch as well.
+        var modelDirectory = string.IsNullOrWhiteSpace(s.AsrModelPath) || !Directory.Exists(s.AsrModelPath)
+            ? ModelCatalog.DefaultSherpaModel
+            : s.AsrModelPath;
+        if (!Directory.Exists(modelDirectory))
         {
-            if (!Directory.Exists(s.AsrModelPath))
-            {
-                throw new FileNotFoundException($"未找到 Zipformer 模型目录: {s.AsrModelPath}（请在设置中下载）");
-            }
-
-            return new SherpaAsrEngine(s.AsrModelPath);
+            throw new FileNotFoundException($"未找到 sherpa-onnx 模型目录: {s.AsrModelPath}（请在设置中下载）");
         }
 
-        var model = string.IsNullOrWhiteSpace(s.AsrModelPath) ? ModelCatalog.DefaultAsrModel : s.AsrModelPath;
-        var mmproj = string.IsNullOrWhiteSpace(s.AsrMmprojPath) ? ModelCatalog.DefaultAsrMmproj : s.AsrMmprojPath;
-        if (!File.Exists(model)) throw new FileNotFoundException($"未找到 ASR 模型: {model}");
-        if (!File.Exists(mmproj)) throw new FileNotFoundException($"未找到 ASR 音频编码器: {mmproj}");
-        return new Qwen3AsrEngine(model, mmproj, s.GpuBackend, s.GpuLayerCount, s.ContextSize);
+        var language = string.Equals(s.SourceLanguage, "auto", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : s.SourceLanguage;
+        return new SherpaAsrEngine(modelDirectory, language);
     }
 
     private static string ResolveLlmPath()

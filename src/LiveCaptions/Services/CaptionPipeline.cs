@@ -25,7 +25,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private readonly List<float> _utterance = [];
 
     private IAsrEngine? _asr;
-    private TranslationService? _translator;
+    private ITranslator? _translator;
     private CancellationTokenSource? _cts;
     private Task? _mainLoop;
     private Task? _translateLoop;
@@ -40,6 +40,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private int _nextId = 1;
     private CaptionItem? _liveItem;
     private string _lastFinalText = "";
+    private string? _lastPartialText;
     private CancellationTokenSource? _partialDebounce;
 
     public CaptionPipeline(AppSettings settings, Microsoft.UI.Dispatching.DispatcherQueue? ui = null)
@@ -106,7 +107,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
     public bool IsRunning => _mainLoop is not null;
 
-    public void SetEngines(IAsrEngine asr, TranslationService? translator)
+    public void SetEngines(IAsrEngine asr, ITranslator? translator)
     {
         _asr = asr;
         _translator = translator;
@@ -270,10 +271,14 @@ public sealed class CaptionPipeline : IAsyncDisposable
             return;
         }
 
-        // Snapshot and clear first: audio arriving while we decode stays in the
+        // Finals consume the buffer: audio arriving while we decode stays in the
         // pending/channel buffers and becomes the start of the next utterance.
+        // Partials keep the buffer so the window keeps growing until a final.
         var samples = _utterance.ToArray();
-        _utterance.Clear();
+        if (final)
+        {
+            _utterance.Clear();
+        }
 
         if (silenceEnd)
         {
@@ -326,14 +331,19 @@ public sealed class CaptionPipeline : IAsyncDisposable
             return;
         }
 
-        // Long partials that clearly end a sentence are committed as finals so that
-        // captions keep flowing (and get translated) during continuous speech.
+        // Long partials that end a sentence (or that stopped changing between two
+        // consecutive decodes - some engines, e.g. Zipformer, emit no punctuation)
+        // are committed as finals so captions keep flowing and get translated.
         if (!final && _settings.PartialCommitSeconds > 0
             && samples.Length / (double)SampleRate >= _settings.PartialCommitSeconds
-            && EndsWithSentencePunctuation(text))
+            && (EndsWithSentencePunctuation(text)
+                || string.Equals(text, _lastPartialText, StringComparison.Ordinal)))
         {
             final = true;
+            _utterance.Clear();
         }
+
+        _lastPartialText = final ? null : text;
 
         Log.Write($"[asr] {(final ? "final" : "partial")} {samples.Length / 16000.0:0.00}s in {stopwatch.ElapsedMilliseconds}ms: {text}");
 

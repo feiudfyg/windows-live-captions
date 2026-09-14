@@ -6,9 +6,7 @@ namespace LiveCaptions.Services;
 internal static class Log
 {
     private static readonly object Gate = new();
-    private static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "LiveCaptions", "livecaptions.log");
+    private static readonly string FilePath = AppPaths.LogPath;
 
     public static void Write(string message)
     {
