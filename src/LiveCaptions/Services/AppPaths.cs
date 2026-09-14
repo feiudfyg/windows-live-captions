@@ -19,6 +19,9 @@ internal static class AppPaths
 
     public static string CrashDumpsDirectory => Path.Combine(DataRoot, "crashes");
 
+    /// <summary>Downloaded native runtimes (llama-server, ...).</summary>
+    public static string RuntimeDirectory => Path.Combine(DataRoot, "runtime");
+
     private static string Resolve()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

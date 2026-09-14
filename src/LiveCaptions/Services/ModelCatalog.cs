@@ -132,11 +132,22 @@ public static class ModelCatalog
                 $"{Qwen25Repo}/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf", 1_117_321_312),
         ]);
 
+    public static readonly ModelEntry LlmQwen38_27B = new(
+        "qwen3.8-27b-iq4",
+        "llm",
+        "Qwen3.8-27B Uncensored IQ4_XS",
+        "27B 高质量翻译模型（约 15 GB 显存），需配合「本地 llama.cpp 服务」后端使用",
+        [
+            new ModelFile("Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf",
+                "https://huggingface.co/HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF/resolve/main/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf",
+                16_000_000_000),
+        ]);
+
     public static readonly ModelEntry[] All =
     [
         ZipformerJa, CohereTranscribe, ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
         ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
-        LlmQwen35Q8, LlmQwen35Q4, LlmQwen25Small,
+        LlmQwen35Q8, LlmQwen35Q4, LlmQwen38_27B, LlmQwen25Small,
     ];
 
     public static string PathOf(string fileName) => Path.Combine(ModelsDirectory, fileName);

@@ -18,15 +18,20 @@ public sealed class HttpTranslationService : ITranslator
     };
 
     private readonly AppSettings _settings;
+    private readonly string? _endpointOverride;
     private string _model = "";
 
-    public HttpTranslationService(AppSettings settings) => _settings = settings;
+    public HttpTranslationService(AppSettings settings, string? endpointOverride = null)
+    {
+        _settings = settings;
+        _endpointOverride = endpointOverride;
+    }
 
     public bool IsLoaded { get; private set; }
     public string Backend { get; private set; } = "HTTP";
     public string ModelName => string.IsNullOrEmpty(_model) ? "(服务端模型)" : _model;
 
-    private string BaseUrl => _settings.LlmEndpoint.TrimEnd('/');
+    private string BaseUrl => (_endpointOverride ?? _settings.LlmEndpoint).TrimEnd('/');
 
     public async Task LoadAsync(CancellationToken ct = default)
     {

@@ -39,10 +39,20 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock Text="翻译后端" VerticalAlignment="Center" />
-                        <ComboBox x:Name="LlmBackendCombo" Width="280" SelectionChanged="LlmBackendCombo_SelectionChanged" />
+                        <ComboBox x:Name="LlmBackendCombo" Width="300" SelectionChanged="LlmBackendCombo_SelectionChanged" />
+                    </StackPanel>
+                    <StackPanel x:Name="LlamaServerPanel" Spacing="4" Visibility="Collapsed">
+                        <TextBlock x:Name="LlamaServerRuntimeText" FontSize="11" Opacity="0.7" TextWrapping="Wrap" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="服务端口" VerticalAlignment="Center" />
+                            <TextBox x:Name="LlamaServerPortBox" Width="100" />
+                            <TextBlock x:Name="LlamaServerPortHint" VerticalAlignment="Center" FontSize="11" Opacity="0.6" />
+                        </StackPanel>
+                        <TextBlock Text="附加参数（可选，例如 --no-mmap -t 8）" />
+                        <TextBox x:Name="LlamaServerArgsBox" PlaceholderText="可选" />
                     </StackPanel>
                     <StackPanel x:Name="HttpBackendPanel" Spacing="4" Visibility="Collapsed">
-                        <TextBlock Text="服务地址（OpenAI 兼容，如 LM Studio 本地服务）" />
+                        <TextBlock Text="服务地址（OpenAI 兼容，如 vLLM / LM Studio / 远程服务）" />
                         <TextBox x:Name="LlmEndpointBox" PlaceholderText="http://127.0.0.1:1234/v1" />
                         <TextBlock Text="模型名（留空则使用服务端当前加载的模型）" />
                         <TextBox x:Name="LlmEndpointModelBox" PlaceholderText="留空自动" />

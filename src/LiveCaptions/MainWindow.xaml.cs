@@ -25,6 +25,7 @@ public sealed partial class MainWindow : Window
     private CaptionPipeline? _pipeline;
     private IAsrEngine? _asr;
     private ITranslator? _translator;
+    private LocalLlamaServer? _llamaServer;
     private SettingsWindow? _settingsWindow;
 
     private bool _busy;
@@ -140,7 +141,33 @@ public sealed partial class MainWindow : Window
             ITranslator? translator = null;
             if (App.Settings.TranslateEnabled)
             {
-                if (App.Settings.LlmBackend.Equals("http", StringComparison.OrdinalIgnoreCase))
+                if (App.Settings.LlmBackend.Equals("llamacpp", StringComparison.OrdinalIgnoreCase))
+                {
+                    var llmPath = ResolveLlmPath();
+                    SetStatus("正在启动 llama.cpp 服务…");
+                    var server = new LocalLlamaServer(App.Settings);
+                    await Task.Run(() => server.StartAsync(llmPath)).ConfigureAwait(true);
+                    _llamaServer = server;
+
+                    var httpTranslator = new HttpTranslationService(App.Settings, server.BaseAddress);
+                    await Task.Run(() => httpTranslator.LoadAsync()).ConfigureAwait(true);
+                    translator = httpTranslator;
+
+                    // Warm up so the first subtitle is not delayed by CUDA graph setup.
+                    SetStatus("正在预热翻译模型…");
+                    try
+                    {
+                        var warmupTarget = LanguageCatalog.FindTarget(App.Settings.TargetLanguage);
+                        await Task.Run(() => httpTranslator.TranslateAsync("Hello.", warmupTarget, null)).ConfigureAwait(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Write($"[mt] warmup failed: {ex.Message}");
+                    }
+
+                    SetStatus($"翻译就绪 · {Path.GetFileNameWithoutExtension(llmPath)} (llama.cpp :{server.ActualPort})");
+                }
+                else if (App.Settings.LlmBackend.Equals("http", StringComparison.OrdinalIgnoreCase))
                 {
                     SetStatus("正在连接翻译服务…");
                     var httpTranslator = new HttpTranslationService(App.Settings);
@@ -210,6 +237,9 @@ public sealed partial class MainWindow : Window
 
         _translator?.Dispose();
         _translator = null;
+
+        _llamaServer?.Dispose();
+        _llamaServer = null;
 
         _asr?.Dispose();
         _asr = null;
@@ -313,10 +343,17 @@ public sealed partial class MainWindow : Window
     {
         if (!_dragging) return;
         var pos = e.GetCurrentPoint(null).Position;
-        var x = _windowStart.X + (int)(pos.X - _dragStart.X);
-        var y = _windowStart.Y + (int)(pos.Y - _dragStart.Y);
+        var scale = RasterizationScale;
+        var x = _windowStart.X + (int)((pos.X - _dragStart.X) * scale);
+        var y = _windowStart.Y + (int)((pos.Y - _dragStart.Y) * scale);
         AppWindow.Move(new PointInt32(x, y));
     }
+
+    /// <summary>
+    /// Pointer coordinates are in logical pixels while AppWindow works in
+    /// physical pixels; without this conversion dragging drifts on scaled displays.
+    /// </summary>
+    private double RasterizationScale => RootGrid.XamlRoot?.RasterizationScale ?? 1.0;
 
     private void Panel_PointerReleased(object sender, PointerRoutedEventArgs e)
     {
@@ -343,8 +380,9 @@ public sealed partial class MainWindow : Window
     {
         if (!_resizing) return;
         var pos = e.GetCurrentPoint(null).Position;
-        var w = Math.Max(360, _sizeStart.Width + (int)(pos.X - _dragStart.X));
-        var h = Math.Max(100, _sizeStart.Height + (int)(pos.Y - _dragStart.Y));
+        var scale = RasterizationScale;
+        var w = Math.Max(360, _sizeStart.Width + (int)((pos.X - _dragStart.X) * scale));
+        var h = Math.Max(100, _sizeStart.Height + (int)((pos.Y - _dragStart.Y) * scale));
         AppWindow.Resize(new SizeInt32(w, h));
     }
 

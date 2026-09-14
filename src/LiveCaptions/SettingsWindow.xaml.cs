@@ -58,11 +58,21 @@ public sealed partial class SettingsWindow : Window
         TranslateCheck.IsChecked = _working.TranslateEnabled;
         TranslatePartialsCheck.IsChecked = _working.TranslatePartials;
 
-        LlmBackendCombo.ItemsSource = new[] { "本地 GGUF（内置 llama.cpp）", "HTTP 服务（LM Studio 等）" };
-        LlmBackendCombo.SelectedIndex = _working.LlmBackend.Equals("http", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        LlmBackendCombo.ItemsSource = new[] { "本地 GGUF（内置 llama.cpp，无需额外组件）", "本地 llama.cpp 服务（托管进程，支持最新模型）", "HTTP 服务（外部，如 vLLM / LM Studio）" };
+        LlmBackendCombo.SelectedIndex = _working.LlmBackend.ToLowerInvariant() switch
+        {
+            "llamacpp" => 1,
+            "http" => 2,
+            _ => 0,
+        };
         LlmEndpointBox.Text = _working.LlmEndpoint;
         LlmEndpointModelBox.Text = _working.LlmEndpointModel;
         LlmDisableThinkingCheck.IsChecked = _working.LlmHttpDisableThinking;
+        LlamaServerPortBox.Text = _working.LlamaServerPort.ToString();
+        LlamaServerArgsBox.Text = _working.LlamaServerExtraArgs;
+        LlamaServerRuntimeText.Text = LocalLlamaServer.RuntimeAvailable
+            ? $"运行时: {LocalLlamaServer.ServerPath}"
+            : "未找到 llama-server.exe，请运行 scripts/fetch-llama-server.ps1 下载运行时";
         UpdateBackendVisibility();
         ShowOriginalCheck.IsChecked = _working.ShowOriginal;
         AlwaysOnTopCheck.IsChecked = _working.AlwaysOnTop;
@@ -185,10 +195,36 @@ public sealed partial class SettingsWindow : Window
 
     private void UpdateBackendVisibility()
     {
-        var http = LlmBackendCombo.SelectedIndex == 1;
+        var index = LlmBackendCombo.SelectedIndex;
+        var managed = index == 1;
+        var http = index == 2;
+
+        LlamaServerPanel.Visibility = managed ? Visibility.Visible : Visibility.Collapsed;
         HttpBackendPanel.Visibility = http ? Visibility.Visible : Visibility.Collapsed;
+
+        // A model file is required for "llama" and "llamacpp", not for external HTTP.
         LlmModelCombo.IsEnabled = !http;
         LlmDownloadButton.IsEnabled = !http;
+
+        var port = 0;
+        if (managed && int.TryParse(LlamaServerPortBox.Text, out var parsed) && parsed > 0)
+        {
+            port = parsed;
+            try
+            {
+                var listener = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
+                    .GetActiveTcpListeners().Any(e => e.Port == port);
+                LlamaServerPortHint.Text = listener ? "端口已被占用（可能已有服务在运行）" : "端口可用";
+            }
+            catch
+            {
+                LlamaServerPortHint.Text = "";
+            }
+        }
+        else
+        {
+            LlamaServerPortHint.Text = "";
+        }
     }
 
     private void LlmModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -369,10 +405,24 @@ public sealed partial class SettingsWindow : Window
     {
         _working.TranslateEnabled = TranslateCheck.IsChecked == true;
         _working.TranslatePartials = TranslatePartialsCheck.IsChecked == true;
-        _working.LlmBackend = LlmBackendCombo.SelectedIndex == 1 ? "http" : "llama";
+        _working.LlmBackend = LlmBackendCombo.SelectedIndex switch
+        {
+            1 => "llamacpp",
+            2 => "http",
+            _ => "llama",
+        };
         _working.LlmEndpoint = string.IsNullOrWhiteSpace(LlmEndpointBox.Text) ? "http://127.0.0.1:1234/v1" : LlmEndpointBox.Text.Trim();
         _working.LlmEndpointModel = LlmEndpointModelBox.Text.Trim();
         _working.LlmHttpDisableThinking = LlmDisableThinkingCheck.IsChecked == true;
+        _working.LlamaServerExtraArgs = LlamaServerArgsBox.Text.Trim();
+        if (int.TryParse(LlamaServerPortBox.Text, out var port) && port is > 0 and < 65536)
+        {
+            _working.LlamaServerPort = port;
+        }
+        else
+        {
+            LlamaServerPortBox.Text = _working.LlamaServerPort.ToString();
+        }
         _working.ShowOriginal = ShowOriginalCheck.IsChecked == true;
         _working.AlwaysOnTop = AlwaysOnTopCheck.IsChecked == true;
         _working.AutoStartCapture = AutoStartCheck.IsChecked == true;

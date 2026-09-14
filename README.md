@@ -19,7 +19,7 @@ Windows 桌面应用：捕获**系统播放的音频**（WASAPI 回环），在�
   - **Qwen3-ASR-1.7B**（默认）：52 种语言/方言、自动语种识别，GPU 加速；内置重复论惩罚与复读截断防退化
   - **Zipformer（sherpa-onnx）**：RNN-T 架构，**天然不会复读退化**，抗噪能力强，CPU 实时（RTF ≈ 0.05），提供 日语 / 中英双语 / 粤语 / 韩语 模型
   - **Whisper large-v3-turbo**：whisper.cpp CUDA 加速，兼容性最好
-- **实时翻译**：本地 **Qwen3.5-9B**（GGUF，Q8_0）逐句翻译，token 级流式刷新；与目标语言一致时自动跳过翻译
+- **实时翻译**（三种后端可选）：本地 GGUF（内置 llama.cpp，开箱即用）；**托管 llama.cpp 服务**（官方 nightly，支持最新架构如 Qwen3.8-27B，应用自动启停进程，实测 27B IQ4_XS 约 200 ms/句）；外部 HTTP 服务（vLLM / LM Studio / 远程 OpenAI 兼容端点）
 - **GPU 加速**：llama.cpp **CUDA 12**（默认）或 **Vulkan** 后端，全层 offload + KV cache 显存驻留；Whisper 走 CUDA 13；Zipformer 走 CPU（模型小、延迟低）
 - **悬浮窗**：无边框、置顶、亚克力半透明；按住面板任意位置拖动、右下角拖动缩放；悬停显示工具栏（开始/暂停、清空、设置、退出）；右键菜单
 - **设置窗口**：引擎/模型选择与一键下载、GPU 后端、源语言/目标语言、字号/透明度/行数、灵敏度，改动实时预览
@@ -100,6 +100,18 @@ Vulkan 与 CUDA 在短句场景下推理速度基本一致（差异 < 20 ms）�
 - GitHub 受限时可使用镜像，例如：
   `https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/<模型包>`
 - 再次打开设置窗口时，已存在的模型会自动识别
+
+### llama.cpp 托管服务运行时
+
+「本地 llama.cpp 服务」后端需要官方 nightly 运行时（llama-server.exe，约 500 MB 下载）：
+
+```powershell
+pwsh scripts/fetch-llama-server.ps1            # CUDA 13.3 版（默认）
+pwsh scripts/fetch-llama-server.ps1 -Variant vulkan   # 或轻量 Vulkan 版（30 MB）
+```
+
+安装到 `data/runtime/llama.cpp/`。该后端支持最新模型架构（如 Qwen3.8-27B 的 MTP），
+默认以 `--reasoning off` 启动（关闭思考，降低延迟），可自定义端口与附加参数。
 
 ## 目录结构
 
