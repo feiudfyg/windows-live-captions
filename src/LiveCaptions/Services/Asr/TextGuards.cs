@@ -128,6 +128,9 @@ internal static partial class TextGuards
             sb.Append(ch);
         }
 
-        return sb.ToString().Trim();
+        return sb.ToString().Trim().TrimStart(LeadingJunk).TrimEnd(TrailingJunk).Trim();
     }
+
+    private static readonly char[] LeadingJunk = ['・', '·', '-', '—', '–', '，', ',', '、', '。', '.', ' ', '\u3000'];
+    private static readonly char[] TrailingJunk = ['・', '·', ' ', '\u3000'];
 }
