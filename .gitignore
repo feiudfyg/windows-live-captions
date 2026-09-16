@@ -37,12 +37,23 @@ artifacts/
 *.nuget.targets
 .nuget/
 
-# Models (large binaries, downloaded on demand)
+# Models (large binaries, downloaded on demand by ModelDownloadService/scripts)
 /data/models/
 *.bin
 *.gguf
 *.onnx
 *.safetensors
+*.pth
+*.pth.tar
+*.pt
+*.ckpt
+*.h5
+*.tflite
+*.mlmodel
+*.mlmodelc
+*.ark
+*.zip
+*.tar.bz2
 
 # Local runtime data (models, settings, logs, dumps)
 data/
