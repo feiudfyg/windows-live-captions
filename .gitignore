@@ -79,6 +79,7 @@ third_party/cuda12/zips/
 __pycache__/
 *.pyc
 .idea/
+CODE_REVIEW.md
 TestResults/
 [Dd]ocProject/
 *.pfx
