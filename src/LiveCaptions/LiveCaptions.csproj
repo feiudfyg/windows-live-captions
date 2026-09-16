@@ -22,6 +22,8 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <Company>fe-creation</Company>
     <Copyright>feiudfyg</Copyright>
+    <Version>0.9.0</Version>
+    <InformationalVersion>0.9.0</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

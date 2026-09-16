@@ -84,7 +84,9 @@ internal static partial class TranslationText
         }
 
         text = ThinkBlockRegex().Replace(text, "");
+        text = BareThinkBlockRegex().Replace(text, "");
         text = text.Replace("<think>", " ").Replace("</think>", " ");
+        text = text.Replace(" thinking", " ").Replace("<｜end▁of▁thinking｜>", " ");
         text = text.Replace("<|im_end|>", " ").Replace("<|im_start|>", " ").Replace("<|endoftext|>", " ");
         text = text.Replace("\r", " ").Replace("\n", " ");
         text = text.Trim().Trim('"', '\'', '“', '”', '‘', '’').Trim();
@@ -105,4 +107,9 @@ internal static partial class TranslationText
 
     [GeneratedRegex(@" thinking.*?<｜end▁of▁thinking｜>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
     private static partial Regex ThinkBlockRegex();
+
+    /// <summary>A stray closing think token without the opener: everything before
+    /// it is reasoning, so drop it.</summary>
+    [GeneratedRegex(@"^.*?<｜end▁of▁thinking｜>", RegexOptions.Singleline)]
+    private static partial Regex BareThinkBlockRegex();
 }

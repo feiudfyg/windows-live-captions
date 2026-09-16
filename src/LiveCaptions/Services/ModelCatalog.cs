@@ -13,14 +13,19 @@ public sealed record ModelEntry(
     ModelArchive? Archive = null,
     string? DefaultLanguage = null)
 {
-    public bool Exists => Archive is not null
-        ? Directory.Exists(Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory))
-        : Files.All(f => File.Exists(Path.Combine(ModelCatalog.ModelsDirectory, f.FileName)));
+    public bool Exists => Files.Length == 0
+        ? Archive is not null && Directory.Exists(Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory))
+        : Archive is not null
+            ? Directory.Exists(Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory))
+            : Files.All(f => File.Exists(Path.Combine(ModelCatalog.ModelsDirectory, f.FileName)));
 
-    /// <summary>Path used for loading: a file for plain models, a directory for archived ones.</summary>
-    public string PrimaryPath => Archive is not null
-        ? Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory)
-        : ModelCatalog.PathOf(Files[0].FileName);
+    /// <summary>Path used for loading: a file for plain models, a directory for archived ones.
+    /// Entries without files (sidecar-served models) have no local path.</summary>
+    public string PrimaryPath => Files.Length == 0
+        ? ""
+        : Archive is not null
+            ? Path.Combine(ModelCatalog.ModelsDirectory, Archive.ExtractedDirectory)
+            : ModelCatalog.PathOf(Files[0].FileName);
 
     public long TotalBytes => Archive is not null ? Archive.ApproxBytes : Files.Sum(f => f.ApproxBytes);
 }
@@ -173,6 +178,7 @@ public static class ModelCatalog
     public static readonly ModelEntry[] All =
     [
         ZipformerJa, CohereTranscribe, CoherePyTorch, ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
+        WhisperTurbo,
         LlmQwen35Q8, LlmQwen35Q4, LlmQwen38_27B, LlmQwen25Small,
         TenVad, SileroVad,
     ];

@@ -17,6 +17,9 @@ public sealed class HttpTranslationService : ITranslator
         Timeout = TimeSpan.FromMinutes(2),
     };
 
+    /// <summary>Wall-clock budget for the whole self-repair ladder of one caption.</summary>
+    private const int RepairBudgetMs = 20_000;
+
     /// <summary>Three or more consecutive English words - a sign of mixed-language drift.</summary>
     private static readonly System.Text.RegularExpressions.Regex EnglishRun =
         new(@"[A-Za-z']{2,}(?:[ ,.!?'’\x22-]+[A-Za-z']{2,}){2,}",
@@ -92,63 +95,78 @@ public sealed class HttpTranslationService : ITranslator
         var problem = Problem(source, result, target);
         if (problem is not null)
         {
-            Log.Write($"[mt] retry ({problem})");
-            var hardening = _hardening.Length > 0
-                ? _hardening
-                : "\n\nIMPORTANT: Output ONLY the translation in " + target.DisplayName
-                  + ". Never answer in another language, never repeat the user's text.";
-            var retry = await RequestAsync(source, target, hardening, 0.1, context, ct).ConfigureAwait(false);
+            // Self-repair: models occasionally echo the input, loop or answer in the
+            // wrong language. Retry once with a hardened prompt and remember what
+            // fixed it for the rest of the session. The whole ladder is bounded in
+            // wall-clock time so a degraded backend cannot hold the single
+            // translation slot for minutes.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(RepairBudgetMs);
+            var repairCt = budget.Token;
+            try
+            {
+                Log.Write($"[mt] retry ({problem})");
+                var hardening = _hardening.Length > 0
+                    ? _hardening
+                    : "\n\nIMPORTANT: Output ONLY the translation in " + target.DisplayName
+                      + ". Never answer in another language, never repeat the user's text.";
+                var retry = await RequestAsync(source, target, hardening, 0.1, context, repairCt).ConfigureAwait(false);
 
-            if (Problem(source, retry, target) is null)
-            {
-                _hardening = hardening;
-                _consecutiveFailures = 0;
-                result = retry;
-                Log.Write("[mt] retry fixed the output - prompt hardening kept");
-            }
-            else
-            {
-                _consecutiveFailures++;
-                if (_consecutiveFailures >= 2 && _hardening.Length > 0)
+                if (Problem(source, retry, target) is null)
                 {
-                    _hardening = "";
+                    _hardening = hardening;
                     _consecutiveFailures = 0;
-                    Log.Write("[mt] prompt hardening disabled (not helping)");
+                    result = retry;
+                    Log.Write("[mt] retry fixed the output - prompt hardening kept");
                 }
-
-                if (retry.Length > 0) result = retry;
-
-                // The hardened retry sometimes still drifts (e.g. half English
-                // output). Try one direct machine-translation request and keep
-                // whichever candidate looks more like the target language.
-                var repaired = await RequestRepairAsync(source, target, ct).ConfigureAwait(false);
-                if (repaired.Length > 0 && Problem(source, repaired, target) is null)
+                else
                 {
-                    result = repaired;
-                    Log.Write($"[mt] repair fixed the output ({problem})");
-                }
-                else if (repaired.Length > 0 && Better(repaired, result, target))
-                {
-                    result = repaired;
-                    Log.Write($"[mt] repair improved the output ({problem})");
-                }
-
-                // Last resort for drifted output: treat the bad translation itself as
-                // the source. A plain "translate this into <target>" request lands in
-                // the target language even when the original request did not.
-                if (result.Length > 0)
-                {
-                    var rewritten = await RequestRepairAsync(result, target, ct).ConfigureAwait(false);
-                    if (rewritten.Length > 0 && Problem(source, rewritten, target) is null)
+                    _consecutiveFailures++;
+                    if (_consecutiveFailures >= 2 && _hardening.Length > 0)
                     {
-                        result = rewritten;
-                        Log.Write($"[mt] rewrite fixed the output ({problem})");
+                        _hardening = "";
+                        _consecutiveFailures = 0;
+                        Log.Write("[mt] prompt hardening disabled (not helping)");
                     }
-                    else if (rewritten.Length > 0 && Better(rewritten, result, target))
+
+                    if (retry.Length > 0) result = retry;
+
+                    // The hardened retry sometimes still drifts (e.g. half English
+                    // output). Try one direct machine-translation request and keep
+                    // whichever candidate looks more like the target language.
+                    var repaired = await RequestRepairAsync(source, target, repairCt).ConfigureAwait(false);
+                    if (repaired.Length > 0 && Problem(source, repaired, target) is null)
                     {
-                        result = rewritten;
+                        result = repaired;
+                        Log.Write($"[mt] repair fixed the output ({problem})");
+                    }
+                    else if (repaired.Length > 0 && Better(repaired, result, target))
+                    {
+                        result = repaired;
+                        Log.Write($"[mt] repair improved the output ({problem})");
+                    }
+
+                    // Last resort for drifted output: treat the bad translation itself as
+                    // the source. A plain "translate this into <target>" request lands in
+                    // the target language even when the original request did not.
+                    if (result.Length > 0)
+                    {
+                        var rewritten = await RequestRepairAsync(result, target, repairCt).ConfigureAwait(false);
+                        if (rewritten.Length > 0 && Problem(source, rewritten, target) is null)
+                        {
+                            result = rewritten;
+                            Log.Write($"[mt] rewrite fixed the output ({problem})");
+                        }
+                        else if (rewritten.Length > 0 && Better(rewritten, result, target))
+                        {
+                            result = rewritten;
+                        }
                     }
                 }
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Log.Write("[mt] repair ladder timed out; keeping the first result");
             }
         }
         else

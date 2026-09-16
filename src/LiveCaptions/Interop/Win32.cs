@@ -10,8 +10,28 @@ namespace LiveCaptions.Interop;
 internal static class Win32
 {
     private const int GWL_EXSTYLE = -20;
+    private const int GWLP_WNDPROC = -4;
     private const long WS_EX_TOOLWINDOW = 0x00000080;
     private const long WS_EX_TRANSPARENT = 0x00000020;
+
+    public delegate nint WindowProc(nint hWnd, uint message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(nint hWnd, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(nint hWnd, int id);
+
+    [DllImport("user32.dll", EntryPoint = "CallWindowProcW")]
+    private static extern nint CallWindowProc(nint previous, nint hWnd, uint message, nint wParam, nint lParam);
+
+    /// <summary>Registers a system-wide hotkey (e.g. click-through escape hatch).</summary>
+    public static bool RegisterToggleHotKey(nint hWnd, int id, uint modifiers, uint virtualKey)
+        => RegisterHotKey(hWnd, id, modifiers | ModNoRepeat, virtualKey);
+
+    public static void UnregisterToggleHotKey(nint hWnd, int id) => UnregisterHotKey(hWnd, id);
+
+    private const uint ModNoRepeat = 0x4000;
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
     private static extern nint GetWindowLongPtr64(nint hWnd, int nIndex);
@@ -163,4 +183,15 @@ internal static class Win32
         ex = enabled ? ex | WS_EX_TRANSPARENT : ex & ~WS_EX_TRANSPARENT;
         SetLong(hWnd, GWL_EXSTYLE, ex);
     }
+
+    /// <summary>Replaces the window procedure so WM_HOTKEY can be handled.</summary>
+    public static nint SetWindowProc(nint hWnd, WindowProc proc)
+    {
+        var previous = (nint)GetLong(hWnd, GWLP_WNDPROC);
+        SetLong(hWnd, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(proc));
+        return previous;
+    }
+
+    public static nint CallPreviousWindowProc(nint previous, nint hWnd, uint message, nint wParam, nint lParam)
+        => CallWindowProc(previous, hWnd, message, wParam, lParam);
 }

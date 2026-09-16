@@ -27,7 +27,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private const double MaxCommitGapMs = 900;
     private const double DefaultCommitGapMs = 500;
     private const double SpeechHoldMs = 150;         // bridge short pauses inside a sentence
-    private const double PrerollMs = 500;            // audio kept before a speech onset (VAD triggers late, protect first syllables)
+    private const int PrerollBlocks = 5;             // 500 ms of audio kept before a speech onset
     private const double TrailingContextMs = 400;    // silence kept after speech ends
     private const double HeldFragmentFlushMs = 1800; // interjections wait this long for company
     private const double MinRunMs = 350;             // shorter blips are ignored
@@ -43,11 +43,20 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
     private readonly AppSettings _settings;
     private readonly Microsoft.UI.Dispatching.DispatcherQueue? _ui;
-    private readonly Channel<float[]> _audioChannel = Channel.CreateUnbounded<float[]>(
-        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
-    private readonly Channel<TranslationJob> _translationChannel = Channel.CreateUnbounded<TranslationJob>(
-        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+    // Bounded so a stalled engine cannot grow memory without limit: live captions
+    // matter more than stale audio, so the oldest entries are dropped.
+    private const int MaxQueuedAudioBlocks = 300;  // 30 s of audio
+    private const int MaxQueuedTranslations = 64;
+
+    private readonly Channel<float[]> _audioChannel = Channel.CreateBounded<float[]>(
+        new BoundedChannelOptions(MaxQueuedAudioBlocks) { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait });
+
+    private readonly Channel<TranslationJob> _translationChannel = Channel.CreateBounded<TranslationJob>(
+        new BoundedChannelOptions(MaxQueuedTranslations) { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait });
+
+    private long _droppedAudioBlocks;
+    private long _droppedTranslations;
 
     private readonly List<float> _pending = [];
     private readonly List<float> _utterance = [];
@@ -104,6 +113,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private int _nextId = 1;
     private CaptionItem? _liveItem;
     private string _lastFinalText = "";
+    private DateTime _lastFinalAt = DateTime.MinValue;
     private string? _lastPartialText;
     private CancellationTokenSource? _partialDebounce;
 
@@ -208,7 +218,19 @@ public sealed class CaptionPipeline : IAsyncDisposable
         if (count <= 0) return;
         var copy = new float[count];
         Array.Copy(samples, copy, count);
-        _audioChannel.Writer.TryWrite(copy);
+
+        if (!_audioChannel.Writer.TryWrite(copy) && _audioChannel.Reader.TryRead(out _))
+        {
+            // Queue full: ASR is behind real time. Drop the oldest block, keep the
+            // newest audio, and say so occasionally instead of growing forever.
+            var dropped = Interlocked.Increment(ref _droppedAudioBlocks);
+            if (dropped % 100 == 1)
+            {
+                Log.Write($"[audio] processing is behind; dropped {dropped} queued blocks");
+            }
+
+            _audioChannel.Writer.TryWrite(copy);
+        }
     }
 
     public async Task StopAsync()
@@ -277,6 +299,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
         _cleanCuts = 0;
         _liveItem = null;
         _lastFinalText = "";
+        _lastFinalAt = DateTime.MinValue;
         _vad?.Reset();
 
         // Drop leftovers so a restart starts from a clean slate instead of
@@ -313,6 +336,14 @@ public sealed class CaptionPipeline : IAsyncDisposable
             {
                 if (!await reader.WaitToReadAsync(ct).ConfigureAwait(false)) break;
                 while (reader.TryRead(out var chunk)) _pending.AddRange(chunk);
+
+                if (_pending.Count > SampleRate * 90)
+                {
+                    var drop = _pending.Count - SampleRate * 60;
+                    _pending.RemoveRange(0, drop);
+                    Log.Write($"[audio] dropped {drop / 16000.0:0.0}s of queued audio (processing is behind)");
+                }
+
                 await ProcessPendingAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -376,6 +407,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
                 speechNow = UpdateEnergyGate(scaledRms, out gate);
                 runEnded = _speech && _silenceMs >= _settings.FinalSilenceMs;
+                if (runEnded) _lastSpeechStopAt = DateTime.UtcNow;
                 _wasSpeech = speechNow;
             }
 
@@ -483,7 +515,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
         var copy = new float[block.Length];
         Array.Copy(block, copy, block.Length);
         _preroll.Enqueue(copy);
-        while (_preroll.Count > 4) _preroll.Dequeue();
+        while (_preroll.Count > PrerollBlocks) _preroll.Dequeue();
 
         if (speechNow)
         {
@@ -744,7 +776,10 @@ public sealed class CaptionPipeline : IAsyncDisposable
         _captionPending = false;
         if (text.Length == 0) return;
 
-        if (string.Equals(text, _lastFinalText, StringComparison.OrdinalIgnoreCase))
+        // Only an *immediate* repeat is treated as an ASR loop; a line repeated a
+        // few seconds later is legitimate speech and must not be swallowed.
+        var sinceLastFinal = (DateTime.UtcNow - _lastFinalAt).TotalMilliseconds;
+        if (string.Equals(text, _lastFinalText, StringComparison.OrdinalIgnoreCase) && sinceLastFinal < 2500)
         {
             Log.Write($"[asr] dropped repeat final: {text[..Math.Min(60, text.Length)]}");
             return;
@@ -760,6 +795,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
         var previous = _lastFinalText;
         _liveItem = null;
         _lastFinalText = text;
+        _lastFinalAt = DateTime.UtcNow;
         _partialDebounce?.Cancel();
 
         var lag = _lastSpeechStopAt == default ? 0 : (DateTime.UtcNow - _lastSpeechStopAt).TotalMilliseconds;
@@ -968,7 +1004,19 @@ public sealed class CaptionPipeline : IAsyncDisposable
             return;
         }
 
-        _translationChannel.Writer.TryWrite(new TranslationJob(item, text, final, target, context));
+        var job = new TranslationJob(item, text, final, target, context);
+        if (!_translationChannel.Writer.TryWrite(job) && _translationChannel.Reader.TryRead(out _))
+        {
+            // Queue full: the backend is slower than the speaker. Drop the oldest
+            // job (its caption stays on screen untranslated) and keep the newest.
+            var dropped = Interlocked.Increment(ref _droppedTranslations);
+            if (dropped % 20 == 1)
+            {
+                Log.Write($"[mt] translation queue full; dropped {dropped} stale jobs");
+            }
+
+            _translationChannel.Writer.TryWrite(job);
+        }
     }
 
     private async Task TranslateLoopAsync(CancellationToken ct)

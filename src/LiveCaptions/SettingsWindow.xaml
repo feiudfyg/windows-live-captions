@@ -124,6 +124,10 @@
                         <StackPanel Grid.Row="2" Grid.Column="1" Spacing="4">
                             <CheckBox x:Name="ShowOriginalCheck" Content="显示识别原文" Checked="ShowOriginalCheck_Toggled" Unchecked="ShowOriginalCheck_Toggled" />
                             <CheckBox x:Name="AlwaysOnTopCheck" Content="窗口置顶" />
+                            <CheckBox
+                                x:Name="ClickThroughCheck"
+                                Content="鼠标穿透（不可点击，需在此关闭）"
+                                ToolTipService.ToolTip="开启后悬浮窗不再接受鼠标操作；如需恢复，请重新打开本窗口关闭此选项。" />
                         </StackPanel>
                     </Grid>
                 </StackPanel>

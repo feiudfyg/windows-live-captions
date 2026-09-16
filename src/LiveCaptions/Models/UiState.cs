@@ -20,7 +20,6 @@ public sealed class UiState : INotifyPropertyChanged
     private bool _showOriginal = true;
     private double _panelOpacity = 0.72;
     private SolidColorBrush _panelBrush = null!;
-    private SolidColorBrush _textBrush = null!;
     private string _statusText = "正在初始化…";
     private bool _isListening;
 
@@ -28,7 +27,6 @@ public sealed class UiState : INotifyPropertyChanged
     {
         Current = this;
         _panelBrush = CreatePanelBrush(_panelOpacity);
-        _textBrush = new SolidColorBrush(Colors.White);
     }
 
     public double OriginalFontSize
@@ -46,14 +44,8 @@ public sealed class UiState : INotifyPropertyChanged
     public bool ShowOriginal
     {
         get => _showOriginal;
-        set
-        {
-            if (Set(ref _showOriginal, value)) Raise(nameof(OriginalRowVisibility));
-        }
+        set => Set(ref _showOriginal, value);
     }
-
-    public Microsoft.UI.Xaml.Visibility OriginalRowVisibility =>
-        _showOriginal ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
 
     public double PanelOpacity
     {
@@ -71,12 +63,6 @@ public sealed class UiState : INotifyPropertyChanged
     {
         get => _panelBrush;
         private set => Set(ref _panelBrush, value);
-    }
-
-    public SolidColorBrush TextBrush
-    {
-        get => _textBrush;
-        private set => Set(ref _textBrush, value);
     }
 
     public string StatusText

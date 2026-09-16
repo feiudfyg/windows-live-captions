@@ -150,6 +150,7 @@ public sealed class PyTorchAsrServer : IDisposable
         throw new TimeoutException("ASR 服务启动超时（3 分钟）");
     }
 
+    /// <summary>Any healthy server on the configured port is used as-is.</summary>
     private static async Task<bool> IsReadyAsync(int port, CancellationToken ct)
     {
         try

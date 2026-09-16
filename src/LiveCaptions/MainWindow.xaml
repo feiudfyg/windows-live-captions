@@ -38,7 +38,7 @@
                     Grid.Row="0"
                     IsHitTestVisible="False"
                     VerticalScrollBarVisibility="Hidden"
-                    VerticalScrollMode="Disabled"
+                    VerticalScrollMode="Auto"
                     ZoomMode="Disabled">
                     <ItemsControl x:Name="LinesList">
                         <ItemsControl.ItemTemplate>

@@ -2,6 +2,7 @@ using System.Text.Json;
 using LiveCaptions.Interop;
 using LiveCaptions.Models;
 using LiveCaptions.Services;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Windows.Graphics;
@@ -24,7 +25,13 @@ public sealed partial class SettingsWindow : Window
     {
         InitializeComponent();
         Title = "LiveCaptions 设置";
-        AppWindow.Resize(new SizeInt32(780, 900));
+
+        // The dialog is tall; on small displays keep it inside the work area so the
+        // save row stays reachable.
+        var workArea = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
+        var height = Math.Min(900, Math.Max(480, workArea.Height - 80));
+        var width = Math.Min(780, Math.Max(520, workArea.Width - 80));
+        AppWindow.Resize(new SizeInt32(width, height));
 
         _working = Clone(App.Settings);
         LoadIntoUi();
@@ -108,6 +115,7 @@ public sealed partial class SettingsWindow : Window
         UpdateBackendVisibility();
         ShowOriginalCheck.IsChecked = _working.ShowOriginal;
         AlwaysOnTopCheck.IsChecked = _working.AlwaysOnTop;
+        ClickThroughCheck.IsChecked = _working.ClickThrough;
         AutoStartCheck.IsChecked = _working.AutoStartCapture;
 
         GpuBackendCombo.ItemsSource = new[] { "自动（优先 CUDA）", "Vulkan", "CPU（仅调试）" };
@@ -353,16 +361,28 @@ public sealed partial class SettingsWindow : Window
 
     private async void BrowseAsrModel_Click(object sender, RoutedEventArgs e)
     {
-        var file = await PickFileAsync(".gguf");
-        if (file is null) return;
-        _working.AsrModelPath = file;
-
-        var mmproj = await PickFileAsync(".gguf");
-        if (mmproj is not null)
+        if (AsrModelCombo.SelectedItem is ModelEntry entry
+            && entry.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase))
         {
-            _working.AsrMmprojPath = mmproj;
+            var whisper = await PickFileAsync(".bin");
+            if (whisper is null) return;
+            _working.AsrEngine = "whisper";
+            _working.AsrModelPath = whisper;
+            UpdateAsrPaths();
+            return;
         }
 
+        // sherpa models are directories (tokens.txt + *.onnx): pick a folder, not a file.
+        var folder = await PickFolderAsync();
+        if (folder is null) return;
+        if (!File.Exists(Path.Combine(folder, "tokens.txt")))
+        {
+            StatusText.Text = "所选目录没有 tokens.txt，不是有效的 sherpa-onnx 模型目录";
+            return;
+        }
+
+        _working.AsrEngine = "sherpa";
+        _working.AsrModelPath = folder;
         UpdateAsrPaths();
     }
 
@@ -382,6 +402,16 @@ public sealed partial class SettingsWindow : Window
         picker.FileTypeFilter.Add(extension);
         var file = await picker.PickSingleFileAsync();
         return file?.Path;
+    }
+
+    private async Task<string?> PickFolderAsync()
+    {
+        var picker = new FolderPicker();
+        InitializeWithWindow.Initialize(picker, Win32.GetHwnd(this));
+        picker.SuggestedStartLocation = PickerLocationId.Downloads;
+        picker.FileTypeFilter.Add("*");
+        var folder = await picker.PickSingleFolderAsync();
+        return folder?.Path;
     }
 
     private async void AsrDownloadButton_Click(object sender, RoutedEventArgs e)
@@ -496,6 +526,7 @@ public sealed partial class SettingsWindow : Window
         }
         _working.ShowOriginal = ShowOriginalCheck.IsChecked == true;
         _working.AlwaysOnTop = AlwaysOnTopCheck.IsChecked == true;
+        _working.ClickThrough = ClickThroughCheck.IsChecked == true;
         _working.AutoStartCapture = AutoStartCheck.IsChecked == true;
         _working.PanelOpacity = OpacitySlider.Value;
         _working.BackdropMode = BackdropCombo.SelectedIndex switch

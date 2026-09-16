@@ -26,7 +26,15 @@ internal static class SherpaRuntime
     public static string ResolveProvider(string? setting)
     {
         if (string.Equals(setting, "cpu", StringComparison.OrdinalIgnoreCase)) return "cpu";
-        if (string.Equals(setting, "cuda", StringComparison.OrdinalIgnoreCase)) return "cuda";
+
+        if (string.Equals(setting, "cuda", StringComparison.OrdinalIgnoreCase))
+        {
+            if (CudaAvailable) return "cuda";
+
+            Log.Write("[asr] CUDA requested but the sherpa CUDA runtime is not installed; using cpu");
+            return "cpu";
+        }
+
         return CudaAvailable ? "cuda" : "cpu";
     }
 

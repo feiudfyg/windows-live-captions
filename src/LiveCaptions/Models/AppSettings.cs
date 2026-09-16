@@ -42,7 +42,7 @@ public sealed class AppSettings
     public int MinPartialSeconds { get; set; } = 1;
     public int PartialCommitSeconds { get; set; } = 5;
     public bool UseVad { get; set; } = true; // Silero VAD adaptive segmentation when the model is present
-    public bool UseAsrContext { get; set; } = false;
+    public bool UseAsrContext { get; set; } = false; // only the Whisper engine supports prompts; sherpa/cohere ignore it
 
     // LLM
     public string LlmBackend { get; set; } = "llama"; // "llama" (in-process GGUF) | "llamacpp" (managed llama-server) | "http" (external server)

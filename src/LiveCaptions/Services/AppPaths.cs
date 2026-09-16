@@ -31,7 +31,8 @@ internal static class AppPaths
         while (directory is not null)
         {
             if (File.Exists(Path.Combine(directory.FullName, "LiveCaptions.slnx")) ||
-                Directory.Exists(Path.Combine(directory.FullName, ".git")))
+                Directory.Exists(Path.Combine(directory.FullName, ".git")) ||
+                File.Exists(Path.Combine(directory.FullName, ".git")))
             {
                 RepositoryRoot = directory.FullName;
                 return Path.Combine(directory.FullName, "data");

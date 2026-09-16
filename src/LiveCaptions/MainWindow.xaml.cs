@@ -30,6 +30,7 @@ public sealed partial class MainWindow : Window
 
     private bool _busy;
     private bool _closing;
+    private bool _pendingRestart;
     private bool _dragging;
     private bool _resizing;
     private (int X, int Y) _cursorStart;
@@ -72,10 +73,8 @@ public sealed partial class MainWindow : Window
 
         var hwnd = Win32.GetHwnd(this);
         Win32.HideFromAltTab(hwnd);
-        if (App.Settings.ClickThrough)
-        {
-            Win32.SetClickThrough(hwnd, true);
-        }
+        ApplyClickThrough(hwnd);
+        RegisterClickThroughHotKey(hwnd);
 
         var area = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary).WorkArea;
         var w = (int)App.Settings.WindowWidth;
@@ -107,6 +106,53 @@ public sealed partial class MainWindow : Window
         Log.Write($"[ui] final topmost={App.Settings.AlwaysOnTop} exstyle=0x{Win32.GetExtendedStyle(hwnd):X}");
     }
 
+    private const int ClickThroughHotKeyId = 0x4C43; // 'LC'
+    private Win32.WindowProc? _windowProc;
+    private nint _previousWindowProc;
+
+    /// <summary>Click-through is applied live and can always be undone with Ctrl+Alt+L.</summary>
+    private void ApplyClickThrough(nint hwnd)
+    {
+        Win32.SetClickThrough(hwnd, App.Settings.ClickThrough);
+        Log.Write(App.Settings.ClickThrough
+            ? "[ui] click-through on (Ctrl+Alt+L to turn it off)"
+            : "[ui] click-through off");
+    }
+
+    private void RegisterClickThroughHotKey(nint hwnd)
+    {
+        const uint ModAlt = 0x0001;
+        const uint ModControl = 0x0002;
+        const uint VkL = 0x4C;
+
+        _windowProc = (h, message, wParam, lParam) =>
+        {
+            if (message == 0x0312 && wParam.ToInt64() == ClickThroughHotKeyId)
+            {
+                ToggleClickThrough();
+                return 0;
+            }
+
+            return Win32.CallPreviousWindowProc(_previousWindowProc, h, message, wParam, lParam);
+        };
+
+        _previousWindowProc = Win32.SetWindowProc(hwnd, _windowProc);
+        if (!Win32.RegisterToggleHotKey(hwnd, ClickThroughHotKeyId, ModAlt | ModControl, VkL))
+        {
+            Log.Write("[ui] Ctrl+Alt+L hotkey registration failed; use the settings window to change click-through");
+        }
+    }
+
+    private void ToggleClickThrough()
+    {
+        App.Settings.ClickThrough = !App.Settings.ClickThrough;
+        App.SettingsService.Update(App.Settings);
+        ApplyClickThrough(Win32.GetHwnd(this));
+        SetStatus(App.Settings.ClickThrough
+            ? "鼠标穿透已开启（Ctrl+Alt+L 关闭）"
+            : "鼠标穿透已关闭");
+    }
+
     /// <summary>
     /// Panel background effect: acrylic (Windows backdrop), Gaussian blur
     /// (tint-free acrylic = live blur without the milky sheet), or plain
@@ -124,6 +170,7 @@ public sealed partial class MainWindow : Window
             {
                 case "blur":
                     WindowTransparency.DisableAccent(hwnd);
+                    WindowTransparency.ExtendFrame(hwnd, false);
                     SystemBackdrop = new CleanBlurBackdrop();
                     Log.Write("[ui] backdrop: Gaussian blur (tint-free acrylic)");
                     break;
@@ -138,7 +185,10 @@ public sealed partial class MainWindow : Window
                     Log.Write("[ui] backdrop: plain translucency (transparent window background)");
                     break;
                 default:
+                    // Leaving "simple" behind must reset the frame/accent state, or the
+                    // acrylic sheet is composited over a still-extended frame.
                     WindowTransparency.DisableAccent(hwnd);
+                    WindowTransparency.ExtendFrame(hwnd, false);
                     SystemBackdrop = new DesktopAcrylicBackdrop();
                     Log.Write("[ui] backdrop: acrylic");
                     break;
@@ -208,7 +258,15 @@ public sealed partial class MainWindow : Window
 
     private async Task StartAsync()
     {
-        if (_busy) return;
+        if (_busy)
+        {
+            // Applying settings while models load must not be silently dropped:
+            // remember it and re-run as soon as the current start-up finishes.
+            _pendingRestart = true;
+            Log.Write("[pipeline] start requested while loading; queued");
+            return;
+        }
+
         SetBusy(true);
         TranslateToggle.IsChecked = App.Settings.TranslateEnabled;
         Log.Write($"[pipeline] StartAsync entered, triggered by: {Environment.StackTrace.Split('\n').Skip(3).FirstOrDefault()?.Trim()}");
@@ -347,6 +405,11 @@ public sealed partial class MainWindow : Window
         finally
         {
             SetBusy(false);
+            if (_pendingRestart)
+            {
+                _pendingRestart = false;
+                _dispatcher.TryEnqueue(() => _ = StartAsync());
+            }
         }
     }
 
@@ -701,10 +764,16 @@ public sealed partial class MainWindow : Window
 
             Log.Write("[ui] settings applied, reloading engines");
             ApplyBackdrop();
+            ApplyClickThrough(Win32.GetHwnd(this));
             // Only restart if it was actually running: AutoStartCapture is about
             // launching the app, not about silently starting a paused session.
             if (wasListening)
             {
+                if (_busy)
+                {
+                    SetStatus("设置已保存；当前加载完成后自动重启监听");
+                }
+
                 await StartAsync();
             }
             else
@@ -728,6 +797,15 @@ public sealed partial class MainWindow : Window
         }
 
         _toolbarTimer?.Stop();
+        try
+        {
+            Win32.UnregisterToggleHotKey(Win32.GetHwnd(this), ClickThroughHotKeyId);
+        }
+        catch
+        {
+            // The window may already be gone; nothing to clean up in that case.
+        }
+
         _ = StopAllAsync();
     }
 }

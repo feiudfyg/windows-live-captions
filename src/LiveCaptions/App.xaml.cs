@@ -22,9 +22,21 @@ public partial class App : Application
     public App()
     {
         Log.Write("[boot] App ctor");
-        UnhandledException += (_, e) => Log.Write($"[fatal] unhandled: {e.Exception}");
-        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Write($"[fatal] appdomain: {e.ExceptionObject}");
-        TaskScheduler.UnobservedTaskException += (_, e) => Log.Write($"[fatal] task: {e.Exception}");
+        UnhandledException += (_, e) =>
+        {
+            DumpCrash("xaml-unhandled", e.Exception);
+            Log.Write($"[fatal] unhandled: {e.Exception}");
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            DumpCrash("appdomain", e.ExceptionObject as Exception);
+            Log.Write($"[fatal] appdomain: {e.ExceptionObject}");
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            DumpCrash("task", e.Exception);
+            Log.Write($"[fatal] task: {e.Exception}");
+        };
         try
         {
             InitializeComponent();
@@ -34,6 +46,26 @@ public partial class App : Application
         {
             Log.Write($"[fatal] App.InitializeComponent: {ex}");
             throw;
+        }
+    }
+
+    /// <summary>Writes a fatal exception next to the WER local dumps so a field
+    /// crash leaves a full stack, not just one log line.</summary>
+    private static void DumpCrash(string source, Exception? exception)
+    {
+        if (exception is null) return;
+
+        try
+        {
+            Directory.CreateDirectory(AppPaths.CrashDumpsDirectory);
+            var path = Path.Combine(
+                AppPaths.CrashDumpsDirectory,
+                $"exception-{DateTime.Now:yyyyMMdd-HHmmss}-{source}.txt");
+            File.WriteAllText(path, exception.ToString(), System.Text.Encoding.UTF8);
+        }
+        catch
+        {
+            // A crash must never be delayed by diagnostics.
         }
     }
 

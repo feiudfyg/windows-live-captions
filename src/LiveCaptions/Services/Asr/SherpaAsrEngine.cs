@@ -47,7 +47,8 @@ public sealed class SherpaAsrEngine : IAsrEngine
 
     private void EnsureRecognizer(string encoder, string decoder, string language)
     {
-        if (_recognizer is not null && _recognizerLanguage == language) return;
+        if (_recognizer is not null &&
+            string.Equals(_recognizerLanguage, language, StringComparison.OrdinalIgnoreCase)) return;
 
         _recognizer?.Dispose();
         _recognizer = null;

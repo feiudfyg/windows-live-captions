@@ -26,6 +26,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Share the app's prompt/cleanup and CUDA selection code instead of copying it,
+         so the harness cannot drift from the shipped pipeline. -->
+    <Compile Include="..\..\src\LiveCaptions\Services\TranslationText.cs" Link="Shared\TranslationText.cs" />
+    <Compile Include="..\..\src\LiveCaptions\Services\Asr\TextGuards.cs" Link="Shared\TextGuards.cs" />
+    <Compile Include="..\..\src\LiveCaptions\Services\Cuda12FirstSelectingPolicy.cs" Link="Shared\Cuda12FirstSelectingPolicy.cs" />
+    <Compile Include="..\..\src\LiveCaptions\Models\LanguageCatalog.cs" Link="Shared\LanguageCatalog.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Cuda12Native Include="$(MSBuildProjectDirectory)\..\..\third_party\cuda12\x64\*.dll" />
   </ItemGroup>
 

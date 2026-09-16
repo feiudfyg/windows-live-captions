@@ -4,6 +4,8 @@ using LLama;
 using LLama.Common;
 using LLama.Native;
 using LLama.Sampling;
+using LiveCaptions.Models;
+using LiveCaptions.Services;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using Whisper.net;
@@ -522,7 +524,7 @@ internal static class Program
         if (gaps.Count > 0)
         {
             var sorted = gaps.OrderBy(g => g).ToArray();
-            double P(double q) => sorted[Math.Min(sorted.Length - 1, (int)(q * sorted.Length))];
+            double P(double q) => sorted[Math.Min(sorted.Length - 1, (int)(q * (sorted.Length - 1)))];
             sb.AppendLine($"[vad] gaps(ms): med={P(0.5):0} p75={P(0.75):0} p90={P(0.9):0} max={sorted[^1]:0}");
         }
 
@@ -599,11 +601,23 @@ internal static class Program
         var samples = LoadWav16kMono(wavPath);
 
         var sw = Stopwatch.StartNew();
-        using var factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions
+        WhisperFactory factory;
+        try
         {
-            UseGpu = true,
-            UseFlashAttention = true,
-        });
+            factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions
+            {
+                UseGpu = true,
+                UseFlashAttention = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            // Mirror the app: CUDA may be unavailable, whisper.cpp still runs on CPU.
+            Console.WriteLine($"[whisper] GPU init failed: {ex.Message} - retrying on CPU");
+            factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = false });
+        }
+
+        using var factoryScope = factory;
         Console.WriteLine($"[whisper] factory ready in {sw.ElapsedMilliseconds} ms, backend={RuntimeOptions.LoadedLibrary}");
 
         using var processor = factory.CreateBuilder()
@@ -626,7 +640,7 @@ internal static class Program
         sw.Stop();
         Console.WriteLine();
         Console.WriteLine($"[asr] {sw.ElapsedMilliseconds} ms ({(samples.Length / 16000.0) / (sw.ElapsedMilliseconds / 1000.0):0.00}x realtime)");
-        Console.WriteLine($"[text] {sb.ToString().Trim()}");
+        WriteResult(sb.ToString().Trim());
         return 0;
     }
 
@@ -651,19 +665,20 @@ internal static class Program
         context.NativeHandle.MemoryClear();
         var executor = new InteractiveExecutor(context);
 
-        var prompt =
-            "<|im_start|>system\n" +
-            "You are a professional real-time subtitle translator. " +
-            $"Translate the user's text into {targetLanguage}. " +
-            "Output only the translation itself: no explanations, no notes, no quotes, no original text." +
-            "<|im_end|>\n" +
-            "<|im_start|>user\n" + text + "<|im_end|>\n" +
-            "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+        // Use the app's own prompt/cleanup so offline numbers represent the shipped
+        // pipeline (source-language clause, real-time ASR caveat, repetition guard).
+        var target = LanguageCatalog.Target.FirstOrDefault(l =>
+                         string.Equals(l.Code, targetLanguage, StringComparison.OrdinalIgnoreCase)
+                         || l.EnglishName.Contains(targetLanguage, StringComparison.OrdinalIgnoreCase)
+                         || l.DisplayName.Contains(targetLanguage, StringComparison.OrdinalIgnoreCase))
+                     ?? LanguageCatalog.FindTarget("zh");
+        var source = LanguageCatalog.FindSource("ja");
+        var prompt = TranslationText.ChatMlPrompt(text, target, source);
 
         var inferenceParams = new InferenceParams
         {
-            MaxTokens = 512,
-            SamplingPipeline = new DefaultSamplingPipeline { Temperature = 0.2f },
+            MaxTokens = Math.Clamp(text.Length * 3, 64, 320),
+            SamplingPipeline = new DefaultSamplingPipeline { Temperature = 0.2f, RepeatPenalty = 1.1f },
             AntiPrompts = ["<|im_end|>", "<|im_start|>", "<|endoftext|>"],
         };
 
@@ -680,7 +695,7 @@ internal static class Program
         sw.Stop();
         Console.WriteLine();
         Console.WriteLine($"[mt] first token {firstTokenAt} ms, total {sw.ElapsedMilliseconds} ms");
-        WriteResult(sb.ToString().Trim());
+        WriteResult(TranslationText.Clean(sb.ToString()));
         return 0;
     }
 }
