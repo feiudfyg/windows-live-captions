@@ -99,6 +99,9 @@ public sealed class PyTorchAsrServer : IDisposable
         startInfo.Environment["HF_HOME"] = HuggingFaceHome;
         startInfo.Environment["HF_HUB_DISABLE_XET"] = "1";
         startInfo.Environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1";
+        // Weights are cached by the setup script; a flaky network must not stall startup.
+        startInfo.Environment["HF_HUB_OFFLINE"] = "1";
+        startInfo.Environment["TRANSFORMERS_OFFLINE"] = "1";
         startInfo.Environment["TRANSFORMERS_VERBOSITY"] = "error";
         startInfo.Environment["PYTHONUTF8"] = "1";
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";

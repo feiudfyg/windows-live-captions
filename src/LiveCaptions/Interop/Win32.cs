@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using LiveCaptions.Services;
 using WinRT.Interop;
 
 namespace LiveCaptions.Interop;
@@ -56,6 +57,71 @@ internal static class Win32
     /// so an altered-search-path load is not enough.
     /// </summary>
     public static bool SetDllSearchDirectory(string path) => SetDllDirectory(path);
+
+    private const int DWMWA_NCRENDERING_POLICY = 2;
+    private const int DWMNCRP_ENABLED = 2;
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    private const int DWMWA_BORDER_COLOR = 34;
+    private const int DWMWA_CAPTION_COLOR = 35;
+    private const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
+    private const int PanelColourRef = 0x00130F0E; // COLORREF of the panel colour 0x0E0F13
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
+
+    /// <summary>
+    /// Fixes the DWM-drawn window frame that was showing up as a white border
+    /// around the panel in the acrylic/blur modes:
+    /// - non-client rendering was off for this borderless window, so the side
+    ///   frame bands were painted white;
+    /// - the top caption strip used the light-theme caption colour;
+    /// - a 1px border line was drawn around everything.
+    /// </summary>
+    public static void PrepareWindowFrame(nint hwnd)
+    {
+        var enabled = DWMNCRP_ENABLED;
+        DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, ref enabled, sizeof(int));
+
+        var dark = 1;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
+
+        var caption = PanelColourRef;
+        DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, ref caption, sizeof(int));
+
+        var none = DWMWA_COLOR_NONE;
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref none, sizeof(int));
+
+        Log.Write("[ui] frame: NC rendering on, dark caption, border removed");
+    }
+
+    private const int HWND_TOPMOST = -1;
+    private const int HWND_NOTOPMOST = -2;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(nint hwnd, nint insertAfter, int x, int y, int cx, int cy, uint flags);
+
+    /// <summary>
+    /// Forces the window above all others. WinUI's <c>OverlappedPresenter.IsAlwaysOnTop</c>
+    /// does not reliably set the topmost bit (observed: DWM style stays 0x180), so the
+    /// window calls this explicitly instead.
+    /// </summary>
+    public static bool SetTopMost(nint hwnd, bool topMost)
+    {
+        var result = SetWindowPos(
+            hwnd,
+            topMost ? HWND_TOPMOST : HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+        return result;
+    }
+
+    public static int GetExtendedStyle(nint hwnd) => (int)GetLong(hwnd, GWL_EXSTYLE);
 
     /// <summary>
     /// Physical (screen) cursor position. Pointer event positions are in logical

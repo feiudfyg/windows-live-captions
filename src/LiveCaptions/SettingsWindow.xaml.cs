@@ -17,6 +17,9 @@ public sealed partial class SettingsWindow : Window
     private CancellationTokenSource? _downloadCts;
     private bool _initializing = true;
 
+    /// <summary>True after "保存并应用"; closing without it must not save or reload.</summary>
+    public bool Applied { get; private set; }
+
     public SettingsWindow()
     {
         InitializeComponent();
@@ -92,7 +95,6 @@ public sealed partial class SettingsWindow : Window
         UpdateBackendVisibility();
         ShowOriginalCheck.IsChecked = _working.ShowOriginal;
         AlwaysOnTopCheck.IsChecked = _working.AlwaysOnTop;
-        UseVadCheck.IsChecked = _working.UseVad;
         AutoStartCheck.IsChecked = _working.AutoStartCapture;
 
         GpuBackendCombo.ItemsSource = new[] { "自动（优先 CUDA）", "Vulkan", "CPU（仅调试）" };
@@ -106,10 +108,17 @@ public sealed partial class SettingsWindow : Window
         FontSizeSlider.Value = _working.FontSize;
         OpacitySlider.Value = _working.PanelOpacity;
         MaxLinesSlider.Value = _working.MaxLines;
-        VadSlider.Value = _working.VadThreshold;
         PartialSlider.Value = _working.PartialIntervalMs;
         SilenceSlider.Value = _working.FinalSilenceMs;
         MaxUttSlider.Value = _working.MaxUtteranceSeconds;
+
+        BackdropCombo.ItemsSource = new[] { "亚克力（Windows 默认）", "高斯模糊", "简单半透明" };
+        BackdropCombo.SelectedIndex = _working.BackdropMode.ToLowerInvariant() switch
+        {
+            "blur" => 1,
+            "simple" => 2,
+            _ => 0,
+        };
 
         UpdateLabels();
         StatusText.Text = $"模型目录: {ModelCatalog.ModelsDirectory}";
@@ -183,7 +192,6 @@ public sealed partial class SettingsWindow : Window
         FontSizeLabel.Text = $"字幕字号: {_working.FontSize:0}";
         OpacityLabel.Text = $"面板不透明度: {_working.PanelOpacity:0.00}";
         LinesLabel.Text = $"最大显示行数: {_working.MaxLines}";
-        VadLabel.Text = $"静音阈值: {_working.VadThreshold:0.000}";
         PartialLabel.Text = $"部分结果间隔: {_working.PartialIntervalMs:0} ms";
         SilenceLabel.Text = $"断句静音时长: {_working.FinalSilenceMs:0} ms";
         MaxUttLabel.Text = $"单句最长时长: {_working.MaxUtteranceSeconds:0} s";
@@ -308,13 +316,6 @@ public sealed partial class SettingsWindow : Window
     {
         if (_initializing) return;
         _working.MaxLines = (int)e.NewValue;
-        UpdateLabels();
-    }
-
-    private void VadSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
-    {
-        if (_initializing) return;
-        _working.VadThreshold = e.NewValue;
         UpdateLabels();
     }
 
@@ -463,7 +464,6 @@ public sealed partial class SettingsWindow : Window
             2 => "cuda",
             _ => "auto",
         };
-        _working.UseVad = UseVadCheck.IsChecked == true;
         _working.LlmBackend = LlmBackendCombo.SelectedIndex switch
         {
             1 => "llamacpp",
@@ -486,6 +486,12 @@ public sealed partial class SettingsWindow : Window
         _working.AlwaysOnTop = AlwaysOnTopCheck.IsChecked == true;
         _working.AutoStartCapture = AutoStartCheck.IsChecked == true;
         _working.PanelOpacity = OpacitySlider.Value;
+        _working.BackdropMode = BackdropCombo.SelectedIndex switch
+        {
+            1 => "blur",
+            2 => "simple",
+            _ => "acrylic",
+        };
         _working.GpuBackend = GpuBackendCombo.SelectedIndex switch
         {
             1 => "vulkan",
@@ -498,7 +504,8 @@ public sealed partial class SettingsWindow : Window
 
         _working.Validate();
         App.SettingsService.Update(_working);
-        StatusText.Text = "设置已保存，将在主窗口重新启动监听后生效";
+        Applied = true;
+        StatusText.Text = "设置已保存并应用；关闭窗口后主窗口会重新加载监听";
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();

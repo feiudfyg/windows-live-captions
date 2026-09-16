@@ -62,6 +62,10 @@ public sealed class AppSettings
     public int MaxLines { get; set; } = 3;
     public double FontSize { get; set; } = 22;
     public double PanelOpacity { get; set; } = 0.72;
+
+    /// <summary>Panel background effect: "acrylic" (Windows acrylic), "blur" (Gaussian blur), "simple" (plain translucency).</summary>
+    public string BackdropMode { get; set; } = "acrylic";
+
     public bool ShowOriginal { get; set; } = true;
     public bool AlwaysOnTop { get; set; } = true;
     public bool ClickThrough { get; set; } = false;
@@ -102,5 +106,9 @@ public sealed class AppSettings
         }
         if (WindowWidth < 320) WindowWidth = 320;
         if (WindowHeight < 90) WindowHeight = 90;
+        if (string.IsNullOrWhiteSpace(BackdropMode) || BackdropMode is not ("acrylic" or "blur" or "simple"))
+        {
+            BackdropMode = "acrylic";
+        }
     }
 }

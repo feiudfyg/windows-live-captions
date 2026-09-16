@@ -66,14 +66,7 @@ public sealed partial class MainWindow : Window
         presenter.IsAlwaysOnTop = App.Settings.AlwaysOnTop;
         appWindow.SetPresenter(presenter);
 
-        try
-        {
-            SystemBackdrop = new DesktopAcrylicBackdrop();
-        }
-        catch
-        {
-            // Backdrop is cosmetic - ignore failures (e.g. remote sessions).
-        }
+        ApplyBackdrop();
 
         var hwnd = Win32.GetHwnd(this);
         Win32.HideFromAltTab(hwnd);
@@ -88,6 +81,63 @@ public sealed partial class MainWindow : Window
         var x = App.Settings.WindowX is { } sx ? (int)sx : area.X + (area.Width - w) / 2;
         var y = App.Settings.WindowY is { } sy ? (int)sy : area.Y + area.Height - h - 96;
         appWindow.MoveAndResize(new RectInt32(x, y, w, h));
+
+        // Style juggling (tool-window flag, click-through) can drop the topmost
+        // bit, so re-assert it as the very last step.
+        Win32.SetTopMost(hwnd, App.Settings.AlwaysOnTop);
+        Log.Write($"[ui] final topmost={App.Settings.AlwaysOnTop} exstyle=0x{Win32.GetExtendedStyle(hwnd):X}");
+    }
+
+    /// <summary>
+    /// Panel background effect: acrylic (Windows backdrop), Gaussian blur
+    /// (tint-free acrylic = live blur without the milky sheet), or plain
+    /// translucency. Failures are cosmetic only and fall back to acrylic.
+    /// </summary>
+    internal void ApplyBackdrop()
+    {
+        try
+        {
+            var hwnd = Win32.GetHwnd(this);
+            Win32.PrepareWindowFrame(hwnd);
+            Win32.SetTopMost(hwnd, App.Settings.AlwaysOnTop);
+            Log.Write($"[ui] topmost={App.Settings.AlwaysOnTop} exstyle=0x{Win32.GetExtendedStyle(hwnd):X}");
+            switch (App.Settings.BackdropMode.ToLowerInvariant())
+            {
+                case "blur":
+                    WindowTransparency.DisableAccent(hwnd);
+                    SystemBackdrop = new CleanBlurBackdrop();
+                    Log.Write("[ui] backdrop: Gaussian blur (tint-free acrylic)");
+                    break;
+                case "simple":
+                    // Three parts have to line up (each alone leaves an opaque black
+                    // window): the DWM frame extended over the client area, the legacy
+                    // accent policy, and a backdrop object that disables the system
+                    // backdrop. Result: content composited straight against the
+                    // desktop, sharp and unblurred.
+                    WindowTransparency.EnableSimple(hwnd);
+                    SystemBackdrop = new TransparentBackdrop(hwnd);
+                    Log.Write("[ui] backdrop: plain translucency (transparent window background)");
+                    break;
+                default:
+                    WindowTransparency.DisableAccent(hwnd);
+                    SystemBackdrop = new DesktopAcrylicBackdrop();
+                    Log.Write("[ui] backdrop: acrylic");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Write($"[ui] backdrop '{App.Settings.BackdropMode}' failed: {ex.Message} - falling back to acrylic");
+            try
+            {
+                WindowTransparency.DisableAccent(Win32.GetHwnd(this));
+                SystemBackdrop = new DesktopAcrylicBackdrop();
+            }
+            catch
+            {
+                SystemBackdrop = null;
+            }
+        }
     }
 
     private void SubscribeUiEvents()
@@ -127,7 +177,7 @@ public sealed partial class MainWindow : Window
     private async Task StartAsync()
     {
         if (_busy) return;
-        _busy = true;
+        SetBusy(true);
         TranslateToggle.IsChecked = App.Settings.TranslateEnabled;
         Log.Write($"[pipeline] StartAsync entered, triggered by: {Environment.StackTrace.Split('\n').Skip(3).FirstOrDefault()?.Trim()}");
         try
@@ -196,13 +246,17 @@ public sealed partial class MainWindow : Window
 
             _translator = translator;
 
-            // Adaptive segmentation needs the tiny Silero VAD model; fetch it once.
+            // Adaptive segmentation needs the tiny TEN VAD model; fetch it once.
             if (App.Settings.UseVad && !ModelCatalog.TenVad.Exists)
             {
                 try
                 {
+                    var progress = new Progress<(string file, double ratio, long received, long total)>(p =>
+                        SetStatus($"正在获取分段模型 · {p.ratio * 100:0}%"));
                     SetStatus("正在获取自适应分段模型 (TEN VAD)…");
-                    await new ModelDownloadService().EnsureDownloadedAsync(ModelCatalog.TenVad, null).ConfigureAwait(true);
+                    await new ModelDownloadService()
+                        .EnsureDownloadedAsync(ModelCatalog.TenVad, progress)
+                        .ConfigureAwait(true);
                 }
                 catch (Exception ex)
                 {
@@ -240,8 +294,25 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
-            _busy = false;
+            SetBusy(false);
         }
+    }
+
+    /// <summary>
+    /// Loading state: spinner next to the status text, start/pause and the
+    /// translation toggle disabled. Settings and close stay available so the app
+    /// never feels frozen.
+    /// </summary>
+    private void SetBusy(bool busy)
+    {
+        _busy = busy;
+        _dispatcher.TryEnqueue(() =>
+        {
+            LoadRing.IsActive = busy;
+            LoadRing.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+            ListenButton.IsEnabled = !busy;
+            TranslateToggle.IsEnabled = !busy;
+        });
     }
 
     private void StopAll()
@@ -544,19 +615,35 @@ public sealed partial class MainWindow : Window
         }
 
         var wasListening = App.Ui.IsListening;
-        _settingsWindow = new SettingsWindow();
-        _settingsWindow.Closed += async (_, _) =>
+        var window = new SettingsWindow();
+        _settingsWindow = window;
+        window.Closed += async (_, _) =>
         {
             _settingsWindow = null;
+
+            // Closing without saving only discards the preview; engines are not
+            // touched and nothing is reloaded.
             App.ApplyAppearance();
             PersistWindowBounds();
 
+            if (!window.Applied)
+            {
+                Log.Write("[ui] settings closed without saving");
+                return;
+            }
+
+            Log.Write("[ui] settings applied, reloading engines");
+            ApplyBackdrop();
             if (wasListening || App.Settings.AutoStartCapture)
             {
                 await StartAsync();
             }
+            else
+            {
+                SetStatus("设置已更新 · 点击 ▶ 开始监听");
+            }
         };
-        _settingsWindow.Activate();
+        window.Activate();
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
