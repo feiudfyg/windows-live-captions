@@ -62,4 +62,28 @@
     <Copy SourceFiles="$(OutDir)runtimes\win-x64\native\avx2\ggml-cpu.dll" DestinationFiles="$(OutDir)runtimes\win-x64\native\cuda12\ggml-cpu.dll" SkipUnchangedFiles="true" />
   </Target>
 
+  <!--
+    Publish copies only project items, so the hand-copied CUDA runtime has to be
+    re-deployed next to the published executable as well.
+  -->
+  <Target Name="CopyCuda12RuntimeToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != '' And Exists('$(OutDir)runtimes\win-x64\native\cuda12')">
+    <ItemGroup>
+      <Cuda12Built Include="$(OutDir)runtimes\win-x64\native\cuda12\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(Cuda12Built)" DestinationFolder="$(PublishDir)runtimes\win-x64\native\cuda12" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutDir)cudart64_12.dll" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)cudart64_12.dll')" />
+  </Target>
+  <!--
+    dotnet publish does not carry the XAML compiler output (loose .xbf files and
+    the application resource index), which an unpackaged WinUI app needs at
+    runtime - without them every Application.Resources lookup fails.
+  -->
+  <Target Name="CopyXamlArtifactsToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <XamlArtifacts Include="$(OutDir)*.xbf" />
+      <XamlArtifacts Include="$(OutDir)$(AssemblyName).pri" />
+    </ItemGroup>
+    <Copy SourceFiles="@(XamlArtifacts)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>
