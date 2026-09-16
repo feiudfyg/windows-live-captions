@@ -17,5 +17,7 @@ public interface ITranslator : IDisposable
 
     Task LoadAsync(CancellationToken ct = default);
 
-    Task<string> TranslateAsync(string text, LanguageOption target, Action<string>? onToken, CancellationToken ct = default);
+    /// <param name="context">Previous subtitle, used only to keep names and
+    /// pronouns consistent. Never translated.</param>
+    Task<string> TranslateAsync(string text, LanguageOption target, Action<string>? onToken, string? context = null, CancellationToken ct = default);
 }

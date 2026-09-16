@@ -27,7 +27,7 @@
 
                 <TextBlock
                     x:Name="EmptyHint"
-                    Text="系统音频实时字幕 · 点击工具栏 ▶ 开始监听"
+                    Text="实时字幕 · 点击工具栏 ▶ 开始监听"
                     FontSize="14"
                     Foreground="#66FFFFFF"
                     HorizontalAlignment="Center"
@@ -97,6 +97,13 @@
                             ToolTipService.ToolTip="开始 / 暂停监听">
                             <FontIcon x:Name="ListenIcon" Glyph="&#xE768;" FontSize="12" />
                         </Button>
+                        <ToggleButton
+                            x:Name="TranslateToggle"
+                            Click="TranslateToggle_Click"
+                            Style="{StaticResource OverlayButtonStyle}"
+                            ToolTipService.ToolTip="翻译开 / 关（关闭后仅显示原文字幕）">
+                            <FontIcon x:Name="TranslateIcon" Glyph="&#xE774;" FontSize="12" />
+                        </ToggleButton>
                         <Button
                             Click="ClearButton_Click"
                             Style="{StaticResource OverlayButtonStyle}"
@@ -122,6 +129,7 @@
             <Border.ContextFlyout>
                 <MenuFlyout>
                     <MenuFlyoutItem Text="设置…" Click="SettingsButton_Click" />
+                    <MenuFlyoutItem Text="翻译开 / 关（仅原文字幕）" Click="TranslateMenu_Click" />
                     <MenuFlyoutItem Text="清空字幕" Click="ClearButton_Click" />
                     <MenuFlyoutSeparator />
                     <MenuFlyoutItem Text="退出" Click="CloseButton_Click" />

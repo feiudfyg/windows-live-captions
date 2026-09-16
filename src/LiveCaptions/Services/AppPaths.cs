@@ -11,6 +11,9 @@ internal static class AppPaths
 {
     public static string DataRoot { get; } = Resolve();
 
+    /// <summary>Repository root when running from a source checkout, otherwise null.</summary>
+    public static string? RepositoryRoot { get; private set; }
+
     public static string ModelsDirectory => Path.Combine(DataRoot, "models");
 
     public static string SettingsPath => Path.Combine(DataRoot, "settings.json");
@@ -30,6 +33,7 @@ internal static class AppPaths
             if (File.Exists(Path.Combine(directory.FullName, "LiveCaptions.slnx")) ||
                 Directory.Exists(Path.Combine(directory.FullName, ".git")))
             {
+                RepositoryRoot = directory.FullName;
                 return Path.Combine(directory.FullName, "data");
             }
 

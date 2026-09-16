@@ -33,6 +33,22 @@ public sealed partial class SettingsWindow : Window
 
     private void LoadIntoUi()
     {
+        AudioSourceCombo.ItemsSource = new[] { "系统音频（扬声器回环）", "麦克风", "两者混合" };
+        AudioSourceCombo.SelectedIndex = _working.AudioSource.ToLowerInvariant() switch
+        {
+            "mic" => 1,
+            "both" => 2,
+            _ => 0,
+        };
+
+        AsrProviderCombo.ItemsSource = new[] { "自动（安装 CUDA 运行库时用 GPU）", "CPU", "CUDA（GPU）" };
+        AsrProviderCombo.SelectedIndex = _working.AsrProvider.ToLowerInvariant() switch
+        {
+            "cpu" => 1,
+            "cuda" => 2,
+            _ => 0,
+        };
+
         var asrEntries = ModelCatalog.All.Where(m => m.Kind == "asr").ToArray();
         AsrModelCombo.ItemsSource = asrEntries;
         AsrModelCombo.DisplayMemberPath = nameof(ModelEntry.DisplayName);
@@ -76,6 +92,7 @@ public sealed partial class SettingsWindow : Window
         UpdateBackendVisibility();
         ShowOriginalCheck.IsChecked = _working.ShowOriginal;
         AlwaysOnTopCheck.IsChecked = _working.AlwaysOnTop;
+        UseVadCheck.IsChecked = _working.UseVad;
         AutoStartCheck.IsChecked = _working.AutoStartCapture;
 
         GpuBackendCombo.ItemsSource = new[] { "自动（优先 CUDA）", "Vulkan", "CPU（仅调试）" };
@@ -104,6 +121,11 @@ public sealed partial class SettingsWindow : Window
 
     private static bool ModelMatches(ModelEntry entry, string engine, string path)
     {
+        if (string.Equals(entry.Id, "cohere-py", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(engine, "cohere-py", StringComparison.OrdinalIgnoreCase);
+        }
+
         var pathMatches = entry.Archive is { } archive
             ? path.Contains(archive.ExtractedDirectory, StringComparison.OrdinalIgnoreCase)
             : entry.Files.Length > 0 && path.Contains(entry.Files[0].FileName, StringComparison.OrdinalIgnoreCase);
@@ -134,6 +156,13 @@ public sealed partial class SettingsWindow : Window
 
     private void UpdateAsrPaths()
     {
+        if (string.Equals(_working.AsrEngine, "cohere-py", StringComparison.OrdinalIgnoreCase))
+        {
+            AsrPathText.Text = "由本地 Python 环境提供（先运行 scripts/fetch-cohere-asr.ps1，权重在 data/hf-cache）";
+            MmprojPathText.Text = "";
+            return;
+        }
+
         AsrPathText.Text = string.IsNullOrWhiteSpace(_working.AsrModelPath)
             ? "未选择模型文件"
             : _working.AsrModelPath;
@@ -172,6 +201,15 @@ public sealed partial class SettingsWindow : Window
     /// <summary>Map a catalog entry to the engine id, model path and default language.</summary>
     private void ApplyAsrEntry(ModelEntry entry)
     {
+        if (string.Equals(entry.Id, "cohere-py", StringComparison.OrdinalIgnoreCase))
+        {
+            _working.AsrEngine = "cohere-py";
+            _working.AsrModelPath = "";
+            _working.AsrMmprojPath = "";
+            ApplyDefaultLanguage(entry);
+            return;
+        }
+
         if (entry.Id.StartsWith("whisper", StringComparison.OrdinalIgnoreCase))
         {
             _working.AsrEngine = "whisper";
@@ -350,6 +388,14 @@ public sealed partial class SettingsWindow : Window
     {
         if (_downloadCts is not null) return;
 
+        if (entry.Files.Length == 0 && entry.Archive is null)
+        {
+            // Environment-provided backend (PyTorch sidecar): nothing to download here.
+            DownloadPanel.Visibility = Visibility.Visible;
+            DownloadText.Text = "该项由 scripts/fetch-cohere-asr.ps1 准备 Python 环境与权重（data/hf-cache）";
+            return;
+        }
+
         _downloadCts = new CancellationTokenSource();
         DownloadPanel.Visibility = Visibility.Visible;
         AsrDownloadButton.IsEnabled = false;
@@ -405,6 +451,19 @@ public sealed partial class SettingsWindow : Window
     {
         _working.TranslateEnabled = TranslateCheck.IsChecked == true;
         _working.TranslatePartials = TranslatePartialsCheck.IsChecked == true;
+        _working.AudioSource = AudioSourceCombo.SelectedIndex switch
+        {
+            1 => "mic",
+            2 => "both",
+            _ => "system",
+        };
+        _working.AsrProvider = AsrProviderCombo.SelectedIndex switch
+        {
+            1 => "cpu",
+            2 => "cuda",
+            _ => "auto",
+        };
+        _working.UseVad = UseVadCheck.IsChecked == true;
         _working.LlmBackend = LlmBackendCombo.SelectedIndex switch
         {
             1 => "llamacpp",

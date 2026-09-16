@@ -38,7 +38,7 @@ artifacts/
 .nuget/
 
 # Models (large binaries, downloaded on demand)
-models/
+/data/models/
 *.bin
 *.gguf
 *.onnx

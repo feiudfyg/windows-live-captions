@@ -31,7 +31,7 @@ public sealed partial class MainWindow : Window
     private bool _busy;
     private bool _dragging;
     private bool _resizing;
-    private Point _dragStart;
+    private (int X, int Y) _cursorStart;
     private PointInt32 _windowStart;
     private SizeInt32 _sizeStart;
     private DispatcherQueueTimer? _toolbarTimer;
@@ -43,6 +43,7 @@ public sealed partial class MainWindow : Window
         _dispatcher = DispatcherQueue;
 
         LinesList.ItemsSource = _items;
+        TranslateToggle.IsChecked = App.Settings.TranslateEnabled;
 
         SetupWindow();
         SubscribeUiEvents();
@@ -115,18 +116,19 @@ public sealed partial class MainWindow : Window
     }
     private void StartCapture()
     {
-        _capture = new AudioCaptureService();
+        _capture = new AudioCaptureService(AudioCaptureService.ParseMode(App.Settings.AudioSource));
         _capture.SamplesAvailable += (buffer, count) => _pipeline?.PushAudio(buffer, count);
         _capture.Failed += msg => SetStatus(msg, error: true);
         _capture.DeviceChanged += msg => Log.Write($"[audio] device: {msg}");
         _capture.Start();
-        Log.Write("[audio] capture started");
+        Log.Write($"[audio] capture started ({_capture.Mode})");
     }
 
     private async Task StartAsync()
     {
         if (_busy) return;
         _busy = true;
+        TranslateToggle.IsChecked = App.Settings.TranslateEnabled;
         Log.Write($"[pipeline] StartAsync entered, triggered by: {Environment.StackTrace.Split('\n').Skip(3).FirstOrDefault()?.Trim()}");
         try
         {
@@ -194,8 +196,24 @@ public sealed partial class MainWindow : Window
 
             _translator = translator;
 
+            // Adaptive segmentation needs the tiny Silero VAD model; fetch it once.
+            if (App.Settings.UseVad && !ModelCatalog.TenVad.Exists)
+            {
+                try
+                {
+                    SetStatus("正在获取自适应分段模型 (TEN VAD)…");
+                    await new ModelDownloadService().EnsureDownloadedAsync(ModelCatalog.TenVad, null).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    Log.Write($"[vad] download failed: {ex.Message}");
+                }
+            }
+
             var pipeline = new CaptionPipeline(App.Settings, _dispatcher);
             pipeline.SetEngines(asr, translator);
+            pipeline.SetVad(CreateVad(asr));
+
             pipeline.ItemUpdated += OnItemUpdated;
             pipeline.ErrorOccurred += msg => SetStatus(msg, error: true);
             pipeline.Start();
@@ -203,7 +221,11 @@ public sealed partial class MainWindow : Window
 
             StartCapture();
             var target = LanguageCatalog.FindTarget(App.Settings.TargetLanguage);
-            SetStatus($"正在监听系统音频 · {asr.Name} · 翻译 → {target.DisplayName}");
+            var source = LanguageCatalog.FindSource(App.Settings.SourceLanguage);
+            var input = AudioCaptureService.ModeLabel(AudioCaptureService.ParseMode(App.Settings.AudioSource));
+            SetStatus(translator is null
+                ? $"正在监听{input} · {asr.Name} · 仅原文字幕（{source.DisplayName}）"
+                : $"正在监听{input} · {asr.Name} · {source.DisplayName} → {target.DisplayName}");
             _dispatcher.TryEnqueue(() =>
             {
                 App.Ui.IsListening = true;
@@ -251,6 +273,37 @@ public sealed partial class MainWindow : Window
         });
     }
 
+    /// <summary>
+    /// Picks the segmentation model: FireRedVAD (streamed by the PyTorch sidecar)
+    /// when requested and available, otherwise the in-process sherpa VAD.
+    /// </summary>
+    private static IVad? CreateVad(IAsrEngine asr)
+    {
+        var settings = App.Settings;
+        if (!settings.UseVad) return null;
+
+        var wantsFireRed = settings.VadEngine.Equals("firered", StringComparison.OrdinalIgnoreCase)
+                           || (settings.VadEngine.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                               && App.Settings.AsrEngine.Equals("cohere-py", StringComparison.OrdinalIgnoreCase));
+
+        if (wantsFireRed && asr is CoherePyTorchAsrEngine { ServerAddress: { } address })
+        {
+            Log.Write("[vad] using FireRedVAD streaming via the ASR sidecar");
+            return new RemoteVadSegmenter(address);
+        }
+
+        var vadPath = ModelCatalog.DefaultVadModel;
+        if (!File.Exists(vadPath)) return null;
+
+        var preferSilero = settings.VadEngine.Equals("silero", StringComparison.OrdinalIgnoreCase);
+        if (preferSilero && ModelCatalog.SileroVad.Exists)
+        {
+            vadPath = ModelCatalog.PathOf(ModelCatalog.SileroVad.Files[0].FileName);
+        }
+
+        return new VadSegmenter(vadPath);
+    }
+
     private IAsrEngine CreateAsrEngine()
     {
         var s = App.Settings;
@@ -259,6 +312,16 @@ public sealed partial class MainWindow : Window
             var path = string.IsNullOrWhiteSpace(s.AsrModelPath) ? ModelCatalog.DefaultWhisperModel : s.AsrModelPath;
             if (!File.Exists(path)) throw new FileNotFoundException($"未找到 Whisper 模型: {path}");
             return new WhisperAsrEngine(path, s.WhisperUseCuda);
+        }
+
+        var language = string.Equals(s.SourceLanguage, "auto", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : s.SourceLanguage;
+
+        // Full precision Cohere Transcribe through the PyTorch sidecar.
+        if (string.Equals(s.AsrEngine, "cohere-py", StringComparison.OrdinalIgnoreCase))
+        {
+            return new CoherePyTorchAsrEngine(new PyTorchAsrServer(s), language);
         }
 
         // sherpa-onnx models (Zipformer / Cohere Transcribe). Legacy settings values
@@ -271,10 +334,7 @@ public sealed partial class MainWindow : Window
             throw new FileNotFoundException($"未找到 sherpa-onnx 模型目录: {s.AsrModelPath}（请在设置中下载）");
         }
 
-        var language = string.Equals(s.SourceLanguage, "auto", StringComparison.OrdinalIgnoreCase)
-            ? null
-            : s.SourceLanguage;
-        return new SherpaAsrEngine(modelDirectory, language);
+        return new SherpaAsrEngine(modelDirectory, language, s.AsrProvider);
     }
 
     private static string ResolveLlmPath()
@@ -334,7 +394,7 @@ public sealed partial class MainWindow : Window
         if (IsInsideButton(e.OriginalSource)) return;
 
         _dragging = true;
-        _dragStart = point.Position;
+        _cursorStart = Win32.GetCursorPosition();
         _windowStart = AppWindow.Position;
         Panel.CapturePointer(e.Pointer);
     }
@@ -342,18 +402,14 @@ public sealed partial class MainWindow : Window
     private void Panel_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging) return;
-        var pos = e.GetCurrentPoint(null).Position;
-        var scale = RasterizationScale;
-        var x = _windowStart.X + (int)((pos.X - _dragStart.X) * scale);
-        var y = _windowStart.Y + (int)((pos.Y - _dragStart.Y) * scale);
+
+        // Screen cursor coordinates are physical pixels, exactly what AppWindow
+        // works in - no DPI conversion and no feedback from the window moving.
+        var cursor = Win32.GetCursorPosition();
+        var x = _windowStart.X + (cursor.X - _cursorStart.X);
+        var y = _windowStart.Y + (cursor.Y - _cursorStart.Y);
         AppWindow.Move(new PointInt32(x, y));
     }
-
-    /// <summary>
-    /// Pointer coordinates are in logical pixels while AppWindow works in
-    /// physical pixels; without this conversion dragging drifts on scaled displays.
-    /// </summary>
-    private double RasterizationScale => RootGrid.XamlRoot?.RasterizationScale ?? 1.0;
 
     private void Panel_PointerReleased(object sender, PointerRoutedEventArgs e)
     {
@@ -371,7 +427,7 @@ public sealed partial class MainWindow : Window
         if (!point.Properties.IsLeftButtonPressed) return;
 
         _resizing = true;
-        _dragStart = point.Position;
+        _cursorStart = Win32.GetCursorPosition();
         _sizeStart = AppWindow.Size;
         ResizeGrip.CapturePointer(e.Pointer);
     }
@@ -379,10 +435,9 @@ public sealed partial class MainWindow : Window
     private void Grip_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_resizing) return;
-        var pos = e.GetCurrentPoint(null).Position;
-        var scale = RasterizationScale;
-        var w = Math.Max(360, _sizeStart.Width + (int)((pos.X - _dragStart.X) * scale));
-        var h = Math.Max(100, _sizeStart.Height + (int)((pos.Y - _dragStart.Y) * scale));
+        var cursor = Win32.GetCursorPosition();
+        var w = Math.Max(360, _sizeStart.Width + (cursor.X - _cursorStart.X));
+        var h = Math.Max(100, _sizeStart.Height + (cursor.Y - _cursorStart.Y));
         AppWindow.Resize(new SizeInt32(w, h));
     }
 
@@ -449,6 +504,35 @@ public sealed partial class MainWindow : Window
     {
         _items.Clear();
         EmptyHint.Visibility = Visibility.Visible;
+    }
+
+    private async void TranslateToggle_Click(object sender, RoutedEventArgs e)
+        => await SetTranslateEnabledAsync(TranslateToggle.IsChecked == true);
+
+    private async void TranslateMenu_Click(object sender, RoutedEventArgs e)
+        => await SetTranslateEnabledAsync(!App.Settings.TranslateEnabled);
+
+    /// <summary>Captions-only mode: toggling translation reconfigures the running pipeline.</summary>
+    private async Task SetTranslateEnabledAsync(bool enabled)
+    {
+        if (App.Settings.TranslateEnabled != enabled)
+        {
+            App.Settings.TranslateEnabled = enabled;
+            App.SettingsService.Save();
+            Log.Write($"[ui] translate -> {enabled}");
+        }
+
+        TranslateToggle.IsChecked = enabled;
+        App.ApplyAppearance();
+
+        if (App.Ui.IsListening)
+        {
+            await StartAsync();
+        }
+        else
+        {
+            SetStatus(enabled ? "翻译已开启 · 点击 ▶ 开始监听" : "仅原文字幕模式 · 点击 ▶ 开始监听");
+        }
     }
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)

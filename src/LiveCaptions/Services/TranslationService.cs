@@ -54,7 +54,7 @@ public sealed class TranslationService : ITranslator
         // Warm up so the first real subtitle is not slowed down by shader/graph setup.
         try
         {
-            await TranslateAsync("Hello.", LanguageCatalog.FindTarget(_settings.TargetLanguage), null, ct).ConfigureAwait(false);
+            await TranslateAsync("Hello.", LanguageCatalog.FindTarget(_settings.TargetLanguage), null, null, ct).ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -66,7 +66,7 @@ public sealed class TranslationService : ITranslator
     /// Translate <paramref name="text"/> into <paramref name="target"/>. Tokens are streamed
     /// through <paramref name="onToken"/> so the overlay can update while generating.
     /// </summary>
-    public async Task<string> TranslateAsync(string text, LanguageOption target, Action<string>? onToken, CancellationToken ct = default)
+    public async Task<string> TranslateAsync(string text, LanguageOption target, Action<string>? onToken, string? context = null, CancellationToken ct = default)
     {
         if (!IsLoaded) throw new InvalidOperationException("翻译模型尚未加载");
         if (string.IsNullOrWhiteSpace(text)) return "";
@@ -77,7 +77,7 @@ public sealed class TranslationService : ITranslator
             _context!.NativeHandle.MemoryClear();
 
             var executor = new InteractiveExecutor(_context);
-            var prompt = TranslationText.ChatMlPrompt(text, target);
+            var prompt = TranslationText.ChatMlPrompt(text, target, LanguageCatalog.FindSource(_settings.SourceLanguage), context);
 
             var maxTokens = Math.Clamp(text.Length * 3, 64, _settings.MaxTranslateTokens);
             var inferenceParams = new InferenceParams

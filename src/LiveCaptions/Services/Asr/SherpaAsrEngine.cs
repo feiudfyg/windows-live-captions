@@ -14,16 +14,19 @@ public sealed class SherpaAsrEngine : IAsrEngine
 {
     private readonly string _modelDirectory;
     private readonly string? _defaultLanguage;
+    private readonly string? _providerSetting;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private OfflineRecognizer? _recognizer;
     private string? _recognizerLanguage;
+    private string _activeProvider = "cpu";
     private bool _isCohere;
 
-    public SherpaAsrEngine(string modelDirectory, string? defaultLanguage = null)
+    public SherpaAsrEngine(string modelDirectory, string? defaultLanguage = null, string? provider = null)
     {
         _modelDirectory = modelDirectory;
         _defaultLanguage = defaultLanguage;
+        _providerSetting = provider;
     }
 
     public string Name => _isCohere ? "Cohere Transcribe" : "Zipformer";
@@ -49,6 +52,28 @@ public sealed class SherpaAsrEngine : IAsrEngine
         _recognizer?.Dispose();
         _recognizer = null;
 
+        var provider = SherpaRuntime.ResolveProvider(_providerSetting);
+        SherpaRuntime.Install(provider);
+
+        try
+        {
+            _recognizer = new OfflineRecognizer(BuildConfig(encoder, decoder, language, provider));
+        }
+        catch (Exception ex) when (provider != "cpu")
+        {
+            // CUDA can fail (driver/cuDNN mismatch, unsupported op): keep working on CPU.
+            Log.Write($"[asr] {provider} recognizer failed: {ex.Message} - falling back to cpu");
+            provider = "cpu";
+            _recognizer = new OfflineRecognizer(BuildConfig(encoder, decoder, language, provider));
+        }
+
+        _recognizerLanguage = language;
+        _activeProvider = provider;
+        Backend = $"sherpa-onnx {provider.ToUpperInvariant()} ({(_isCohere ? "cohere" : "zipformer")}, {Path.GetFileNameWithoutExtension(encoder)})";
+    }
+
+    private OfflineRecognizerConfig BuildConfig(string encoder, string decoder, string language, string provider)
+    {
         var tokens = Path.Combine(_modelDirectory, "tokens.txt");
         if (!File.Exists(tokens)) throw new FileNotFoundException($"未找到 tokens.txt: {_modelDirectory}");
 
@@ -74,12 +99,9 @@ public sealed class SherpaAsrEngine : IAsrEngine
 
         config.ModelConfig.Tokens = tokens;
         config.ModelConfig.NumThreads = Math.Clamp(Environment.ProcessorCount / 2, 2, 8);
-        config.ModelConfig.Provider = "cpu";
+        config.ModelConfig.Provider = provider;
         config.DecodingMethod = "greedy_search";
-
-        _recognizer = new OfflineRecognizer(config);
-        _recognizerLanguage = language;
-        Backend = $"sherpa-onnx CPU ({(_isCohere ? "cohere" : "zipformer")}, {Path.GetFileNameWithoutExtension(encoder)})";
+        return config;
     }
 
     /// <summary>Prefer the int8 quantised variant when the archive ships both.</summary>

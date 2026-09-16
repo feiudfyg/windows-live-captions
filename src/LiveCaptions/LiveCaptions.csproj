@@ -20,6 +20,8 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <PublishReadyToRun>false</PublishReadyToRun>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Company>fe-creation</Company>
+    <Copyright>feiudfyg</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

@@ -60,9 +60,12 @@ public partial class App : Application
     public static void ApplyAppearance()
     {
         var s = Settings;
-        Ui.ShowOriginal = s.ShowOriginal;
+
+        // Captions-only mode: the recognised text IS the caption, so it must be
+        // visible and full size even if "show original" is off.
+        Ui.ShowOriginal = s.ShowOriginal || !s.TranslateEnabled;
         Ui.TranslationFontSize = s.FontSize;
-        Ui.OriginalFontSize = Math.Max(10, Math.Round(s.FontSize * 0.64));
+        Ui.OriginalFontSize = s.TranslateEnabled ? Math.Max(10, Math.Round(s.FontSize * 0.64)) : s.FontSize;
         Ui.PanelOpacity = s.PanelOpacity;
     }
 }

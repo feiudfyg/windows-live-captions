@@ -1,73 +1,153 @@
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
 namespace LiveCaptions.Services;
 
+/// <summary>Where the captions listen: the playback loopback, a microphone, or both mixed.</summary>
+public enum AudioInputMode
+{
+    System,
+    Microphone,
+    Both,
+}
+
 /// <summary>
-/// Captures the default playback device via WASAPI loopback and produces
-/// 16 kHz mono float samples for speech recognition.
+/// Captures one or more audio endpoints (system loopback and/or microphone) and
+/// produces a single 16 kHz mono float stream for speech recognition.
 /// </summary>
 public sealed class AudioCaptureService : IDisposable
 {
     public const int TargetSampleRate = 16000;
     private const int ChunkSamples = TargetSampleRate / 10; // 100 ms
 
-    private WasapiLoopbackCapture? _capture;
-    private BufferedWaveProvider? _buffer;
-    private ISampleProvider? _chain;
+    private sealed class Source
+    {
+        public required IWaveIn Capture { get; init; }
+        public required BufferedWaveProvider Buffer { get; init; }
+        public required ISampleProvider Chain { get; init; }
+        public required string DeviceId { get; init; }
+        public required string DeviceName { get; init; }
+        public required bool IsLoopback { get; init; }
+    }
+
+    private readonly AudioInputMode _mode;
+    private readonly List<Source> _sources = [];
+    private readonly object _sync = new();
+
     private CancellationTokenSource? _cts;
     private Task? _pump;
-    private string? _deviceId;
     private DateTime _nextDeviceCheck = DateTime.UtcNow.AddSeconds(5);
     private int _restarting;
+
+    public AudioCaptureService(AudioInputMode mode = AudioInputMode.System)
+    {
+        _mode = mode;
+    }
 
     public event Action<float[], int>? SamplesAvailable;
     public event Action<string>? Failed;
     public event Action<string>? DeviceChanged;
 
-    public bool IsRunning => _capture is not null;
-    public string DeviceName { get; private set; } = "(默认播放设备)";
+    public AudioInputMode Mode => _mode;
+
+    public bool IsRunning
+    {
+        get
+        {
+            lock (_sync) return _sources.Count > 0;
+        }
+    }
+
+    public string DeviceName { get; private set; } = ModeLabel(AudioInputMode.System);
+
+    public static AudioInputMode ParseMode(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "mic" or "microphone" or "capture" => AudioInputMode.Microphone,
+        "both" or "mixed" => AudioInputMode.Both,
+        _ => AudioInputMode.System,
+    };
+
+    public static string ModeLabel(AudioInputMode mode) => mode switch
+    {
+        AudioInputMode.Microphone => "麦克风",
+        AudioInputMode.Both => "系统音频 + 麦克风",
+        _ => "系统音频",
+    };
 
     public void Start()
     {
-        if (_capture is not null) return;
+        if (IsRunning) return;
 
+        var failures = new List<string>();
         try
         {
-            var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
-            var device = enumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
-            DeviceName = device.FriendlyName;
-            _deviceId = device.ID;
-
-            _capture = new WasapiLoopbackCapture(device);
-
-            _buffer = new BufferedWaveProvider(_capture.WaveFormat)
+            using var enumerator = new MMDeviceEnumerator();
+            if (_mode is AudioInputMode.System or AudioInputMode.Both)
             {
-                DiscardOnBufferOverflow = true,
-                BufferDuration = TimeSpan.FromSeconds(8),
-                ReadFully = false,
-            };
-
-            _capture.DataAvailable += OnDataAvailable;
-            _capture.RecordingStopped += OnRecordingStopped;
-
-            ISampleProvider chain = _buffer.ToSampleProvider();
-            if (chain.WaveFormat.Channels >= 2)
-            {
-                chain = new StereoToMonoSampleProvider(chain) { LeftVolume = 0.5f, RightVolume = 0.5f };
+                try
+                {
+                    // The capture keeps the device alive; do not dispose it here.
+                    var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                    AddSource(new WasapiLoopbackCapture(device), device, loopback: true);
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"系统音频: {ex.Message}");
+                }
             }
 
-            if (chain.WaveFormat.SampleRate != TargetSampleRate)
+            if (_mode is AudioInputMode.Microphone or AudioInputMode.Both)
             {
-                chain = new WdlResamplingSampleProvider(chain, TargetSampleRate);
+                try
+                {
+                    var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
+                    AddSource(new WasapiCapture(device), device, loopback: false);
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"麦克风: {ex.Message}");
+                }
             }
 
-            _chain = chain;
+            if (!IsRunning)
+            {
+                throw new InvalidOperationException(failures.Count > 0
+                    ? string.Join("; ", failures)
+                    : "没有可用的音频输入设备");
+            }
+
             _cts = new CancellationTokenSource();
-            _pump = Task.Run(() => PumpLoop(_cts.Token));
+            var token = _cts.Token;
+            _pump = Task.Run(() => PumpLoop(token));
 
-            _capture.StartRecording();
-            DeviceChanged?.Invoke($"{DeviceName} ({_capture.WaveFormat.SampleRate} Hz, {_capture.WaveFormat.Channels} ch)");
+            foreach (var source in Snapshot())
+            {
+                try
+                {
+                    source.Capture.StartRecording();
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{source.DeviceName}: {ex.Message}");
+                    RemoveSource(source);
+                }
+            }
+
+            if (!IsRunning)
+            {
+                throw new InvalidOperationException(failures.Count > 0
+                    ? string.Join("; ", failures)
+                    : "音频输入设备启动失败");
+            }
+
+            DeviceName = DescribeSources();
+            foreach (var failure in failures)
+            {
+                Log.Write($"[audio] input unavailable: {failure}");
+            }
+
+            DeviceChanged?.Invoke($"{DeviceName} ({Snapshot()[0].Capture.WaveFormat.SampleRate} Hz, {Snapshot()[0].Capture.WaveFormat.Channels} ch)");
         }
         catch (Exception ex)
         {
@@ -76,33 +156,154 @@ public sealed class AudioCaptureService : IDisposable
         }
     }
 
+    private void AddSource(IWaveIn capture, MMDevice device, bool loopback)
+    {
+        var buffer = new BufferedWaveProvider(capture.WaveFormat)
+        {
+            DiscardOnBufferOverflow = true,
+            BufferDuration = TimeSpan.FromSeconds(8),
+            ReadFully = false,
+        };
+
+        ISampleProvider chain = buffer.ToSampleProvider();
+        if (chain.WaveFormat.Channels >= 2)
+        {
+            chain = new StereoToMonoSampleProvider(chain) { LeftVolume = 0.5f, RightVolume = 0.5f };
+        }
+
+        if (chain.WaveFormat.SampleRate != TargetSampleRate)
+        {
+            chain = new WdlResamplingSampleProvider(chain, TargetSampleRate);
+        }
+
+        capture.DataAvailable += OnDataAvailable;
+        capture.RecordingStopped += OnRecordingStopped;
+
+        lock (_sync)
+        {
+            _sources.Add(new Source
+            {
+                Capture = capture,
+                Buffer = buffer,
+                Chain = chain,
+                DeviceId = device.ID,
+                DeviceName = device.FriendlyName,
+                IsLoopback = loopback,
+            });
+        }
+    }
+
+    private void RemoveSource(Source source)
+    {
+        lock (_sync) _sources.Remove(source);
+
+        try
+        {
+            source.Capture.StopRecording();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            source.Capture.DataAvailable -= OnDataAvailable;
+            source.Capture.RecordingStopped -= OnRecordingStopped;
+            source.Capture.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private Source[] Snapshot()
+    {
+        lock (_sync) return [.. _sources];
+    }
+
+    private string DescribeSources()
+    {
+        var parts = Snapshot().Select(s => s.IsLoopback ? $"系统音频: {s.DeviceName}" : $"麦克风: {s.DeviceName}");
+        return string.Join(" + ", parts);
+    }
+
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (e.BytesRecorded > 0)
+        if (e.BytesRecorded == 0 || sender is not IWaveIn wave) return;
+
+        try
         {
-            try
+            Source? source;
+            lock (_sync)
             {
-                _buffer?.AddSamples(e.Buffer, 0, e.BytesRecorded);
+                source = _sources.FirstOrDefault(s => ReferenceEquals(s.Capture, wave));
             }
-            catch
-            {
-                // Ignore buffer races during shutdown.
-            }
+
+            source?.Buffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+        }
+        catch
+        {
+            // Ignore buffer races during shutdown.
         }
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
-        if (e.Exception is not null)
+        if (e.Exception is null) return;
+
+        // Common case: the audio service restarted or the endpoint was invalidated
+        // (0x88890004 AUDCLNT_E_DEVICE_INVALIDATED). Rebuild the capture instead of
+        // leaving the app deaf.
+        Log.Write($"[audio] capture stopped: 0x{e.Exception.HResult:X8} {e.Exception.Message} - reconnecting");
+        Restart();
+    }
+
+    /// <summary>Rebuilds all captures on a background thread (safe from capture callbacks).
+    /// Retries a few times because an audio service restart makes the endpoint
+    /// unavailable for a moment.</summary>
+    private void Restart()
+    {
+        if (Interlocked.CompareExchange(ref _restarting, 1, 0) != 0) return;
+
+        Task.Run(async () =>
         {
-            Failed?.Invoke($"音频捕获停止: {e.Exception.Message}");
-        }
+            try
+            {
+                for (var attempt = 1; attempt <= 4; attempt++)
+                {
+                    try
+                    {
+                        Stop();
+                        Start();
+                        if (IsRunning)
+                        {
+                            Log.Write($"[audio] reconnected on attempt {attempt}");
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Write($"[audio] reconnect attempt {attempt} failed: {ex.Message}");
+                    }
+
+                    await Task.Delay(1500).ConfigureAwait(false);
+                }
+
+                Failed?.Invoke("音频重新连接失败，请点击开始重新监听");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _restarting, 0);
+            }
+        });
     }
 
     private void PumpLoop(CancellationToken ct)
     {
-        var buffer = new float[ChunkSamples];
-        var chain = _chain!;
+        var mix = new float[ChunkSamples];
+        var temp = new float[ChunkSamples];
         long chunks = 0;
 
         while (!ct.IsCancellationRequested)
@@ -118,16 +319,45 @@ public sealed class AudioCaptureService : IDisposable
                     }
                 }
 
-                var read = chain.Read(buffer, 0, buffer.Length);
+                var sources = Snapshot();
+                if (sources.Length == 0)
+                {
+                    Thread.Sleep(10);
+                    continue;
+                }
+
+                Array.Clear(mix, 0, mix.Length);
+                var read = 0;
+                foreach (var source in sources)
+                {
+                    int n;
+                    try
+                    {
+                        n = source.Chain.Read(temp, 0, temp.Length);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        n = 0;
+                    }
+
+                    for (var i = 0; i < n; i++) mix[i] += temp[i];
+                    if (n > read) read = n;
+                }
+
                 if (read > 0)
                 {
+                    for (var i = 0; i < read; i++)
+                    {
+                        mix[i] = Math.Clamp(mix[i], -1f, 1f);
+                    }
+
                     chunks++;
                     if (chunks == 1 || chunks % 200 == 0)
                     {
-                        Log.Write($"[audio] pump chunks={chunks} lastRead={read}");
+                        Log.Write($"[audio] pump chunks={chunks} lastRead={read} sources={sources.Length}");
                     }
 
-                    SamplesAvailable?.Invoke(buffer, read);
+                    SamplesAvailable?.Invoke(mix, read);
                 }
                 else
                 {
@@ -147,9 +377,9 @@ public sealed class AudioCaptureService : IDisposable
     }
 
     /// <summary>
-    /// Loopback capture is bound to one device instance; when the user switches
-    /// headphones/speakers the stream goes silent forever. Poll the default
-    /// render device and rebuild the capture when it changes.
+    /// Capture is bound to a device instance; when the user switches speakers or
+    /// microphones the stream goes silent forever. Poll the default endpoints and
+    /// rebuild the capture when one changes.
     /// </summary>
     private bool CheckDeviceChanged()
     {
@@ -158,10 +388,22 @@ public sealed class AudioCaptureService : IDisposable
         var changed = false;
         try
         {
-            using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
-            using var device = enumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
-            changed = _deviceId is not null &&
-                      !string.Equals(device.ID, _deviceId, StringComparison.OrdinalIgnoreCase);
+            var sources = Snapshot();
+            using var enumerator = new MMDeviceEnumerator();
+
+            var loopback = sources.FirstOrDefault(s => s.IsLoopback);
+            if (loopback is not null)
+            {
+                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                changed |= !string.Equals(device.ID, loopback.DeviceId, StringComparison.OrdinalIgnoreCase);
+            }
+
+            var microphone = sources.FirstOrDefault(s => !s.IsLoopback);
+            if (microphone is not null)
+            {
+                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
+                changed |= !string.Equals(device.ID, microphone.DeviceId, StringComparison.OrdinalIgnoreCase);
+            }
         }
         catch
         {
@@ -174,24 +416,9 @@ public sealed class AudioCaptureService : IDisposable
             return false;
         }
 
-        Log.Write("[audio] default playback device changed, restarting capture");
-        Task.Run(() =>
-        {
-            try
-            {
-                Stop();
-                Start();
-            }
-            catch (Exception ex)
-            {
-                Failed?.Invoke($"音频设备切换失败: {ex.Message}");
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _restarting, 0);
-            }
-        });
-
+        Log.Write("[audio] default input device changed, restarting capture");
+        Interlocked.Exchange(ref _restarting, 0);
+        Restart();
         return true;
     }
 
@@ -206,21 +433,9 @@ public sealed class AudioCaptureService : IDisposable
             // ignore
         }
 
-        try
+        foreach (var source in Snapshot())
         {
-            _capture?.StopRecording();
-        }
-        catch
-        {
-            // ignore
-        }
-
-        if (_capture is not null)
-        {
-            _capture.DataAvailable -= OnDataAvailable;
-            _capture.RecordingStopped -= OnRecordingStopped;
-            _capture.Dispose();
-            _capture = null;
+            RemoveSource(source);
         }
 
         try
@@ -235,8 +450,6 @@ public sealed class AudioCaptureService : IDisposable
         _pump = null;
         _cts?.Dispose();
         _cts = null;
-        _buffer = null;
-        _chain = null;
     }
 
     public void Dispose() => Stop();

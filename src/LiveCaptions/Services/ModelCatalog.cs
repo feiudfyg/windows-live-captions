@@ -59,6 +59,15 @@ public static class ModelCatalog
             "sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01", 2_900_000_000),
         "ja");
 
+    public static readonly ModelEntry CoherePyTorch = new(
+        "cohere-py",
+        "asr",
+        "Cohere Transcribe 全精度（PyTorch · GPU）",
+        "官方 bf16 权重 + PyTorch CUDA：实测 157× 实时（8s 窗口约 100ms），质量最好；需先运行 scripts/fetch-cohere-asr.ps1 准备 Python 环境与权重",
+        [],
+        null,
+        "ja");
+
     public static readonly ModelEntry ZipformerZhEn = new(
         "zipformer-zh-en",
         "asr",
@@ -91,6 +100,24 @@ public static class ModelCatalog
             $"{SherpaRepo}/sherpa-onnx-zipformer-korean-2024-06-24.tar.bz2",
             "sherpa-onnx-zipformer-korean-2024-06-24", 330_000_000),
         "ko");
+
+    public static readonly ModelEntry TenVad = new(
+        "ten-vad",
+        "vad",
+        "TEN VAD（自适应分段 · 推荐）",
+        "起音检测比 Silero 更快，句首丢字更少。约 0.3 MB，启动时自动获取",
+        [
+            new ModelFile("ten-vad.onnx", $"{SherpaRepo}/ten-vad.onnx", 332_211),
+        ]);
+
+    public static readonly ModelEntry SileroVad = new(
+        "silero-vad",
+        "vad",
+        "Silero VAD（自适应分段）",
+        "语音活动检测：让字幕按说话节奏自适应分段、抵抗背景音乐。约 0.6 MB，启动时自动获取",
+        [
+            new ModelFile("silero_vad.onnx", $"{SherpaRepo}/silero_vad.onnx", 643_854),
+        ]);
 
     public static readonly ModelEntry WhisperTurbo = new(
         "whisper-large-v3-turbo",
@@ -145,9 +172,9 @@ public static class ModelCatalog
 
     public static readonly ModelEntry[] All =
     [
-        ZipformerJa, CohereTranscribe, ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
-        ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
+        ZipformerJa, CohereTranscribe, CoherePyTorch, ZipformerZhEn, ZipformerCantonese, ZipformerKorean,
         LlmQwen35Q8, LlmQwen35Q4, LlmQwen38_27B, LlmQwen25Small,
+        TenVad, SileroVad,
     ];
 
     public static string PathOf(string fileName) => Path.Combine(ModelsDirectory, fileName);
@@ -157,4 +184,8 @@ public static class ModelCatalog
     /// <summary>Default offline model (Japanese Zipformer - the recommended engine).</summary>
     public static string DefaultSherpaModel => ZipformerJa.PrimaryPath;
     public static string DefaultLlmModel => PathOf(LlmQwen35Q8.Files[0].FileName);
+    /// <summary>Preferred VAD: TEN VAD when available, otherwise Silero.</summary>
+    public static string DefaultVadModel => File.Exists(PathOf(TenVad.Files[0].FileName))
+        ? PathOf(TenVad.Files[0].FileName)
+        : PathOf(SileroVad.Files[0].FileName);
 }
