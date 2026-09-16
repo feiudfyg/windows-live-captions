@@ -85,21 +85,70 @@ public sealed class AppSettings
             AudioInputMode.Both => "both",
             _ => "system",
         };
+        // Ranges match the settings sliders, so a value shown in the dialog is the
+        // value that gets persisted.
         if (MaxLines < 1) MaxLines = 1;
-        if (MaxLines > 10) MaxLines = 10;
-        if (FontSize < 10) FontSize = 10;
-        if (FontSize > 72) FontSize = 72;
+        if (MaxLines > 6) MaxLines = 6;
+        if (FontSize < 12) FontSize = 12;
+        if (FontSize > 44) FontSize = 44;
         if (PanelOpacity < 0.05) PanelOpacity = 0.05;
         if (PanelOpacity > 1.0) PanelOpacity = 1.0;
         if (ContextSize < 2048) ContextSize = 2048;
         if (ContextSize > 131072) ContextSize = 131072;
-        if (PartialIntervalMs < 400) PartialIntervalMs = 400;
-        if (FinalSilenceMs < 200) FinalSilenceMs = 200;
-        if (MaxUtteranceSeconds < 5) MaxUtteranceSeconds = 5;
-        if (MaxUtteranceSeconds > 120) MaxUtteranceSeconds = 120;
+        if (PartialIntervalMs < 600) PartialIntervalMs = 600;
+        if (PartialIntervalMs > 4000) PartialIntervalMs = 4000;
+        if (FinalSilenceMs < 300) FinalSilenceMs = 300;
+        if (FinalSilenceMs > 2000) FinalSilenceMs = 2000;
+        if (MaxUtteranceSeconds < 6) MaxUtteranceSeconds = 6;
+        if (MaxUtteranceSeconds > 60) MaxUtteranceSeconds = 60;
         if (GpuLayerCount < 0) GpuLayerCount = 0;
+        if (GpuLayerCount > 1000) GpuLayerCount = 1000;
         if (CohereAsrPort < 1024) CohereAsrPort = 1024;
         if (CohereAsrPort > 65500) CohereAsrPort = 65500;
+        if (LlamaServerPort < 1024) LlamaServerPort = 1024;
+        if (LlamaServerPort > 65500) LlamaServerPort = 65500;
+        // HttpTranslationService clamps max tokens to >= 64; a smaller value would
+        // throw inside Math.Clamp for every single translation.
+        if (MaxTranslateTokens < 64) MaxTranslateTokens = 64;
+        if (MaxTranslateTokens > 4096) MaxTranslateTokens = 4096;
+        if (TranslateTemperature < 0) TranslateTemperature = 0;
+        if (TranslateTemperature > 2) TranslateTemperature = 2;
+        if (PartialTranslateDelayMs < 0) PartialTranslateDelayMs = 0;
+        if (PartialTranslateDelayMs > 10000) PartialTranslateDelayMs = 10000;
+        if (MinPartialSeconds < 0) MinPartialSeconds = 0;
+        if (MinPartialSeconds > 60) MinPartialSeconds = 60;
+        if (PartialCommitSeconds < 1) PartialCommitSeconds = 1;
+        if (PartialCommitSeconds > 600) PartialCommitSeconds = 600;
+        if (VadThreshold < 0.0005) VadThreshold = 0.0005;
+        if (VadThreshold > 0.1) VadThreshold = 0.1;
+
+        if (string.IsNullOrWhiteSpace(VadEngine) || VadEngine is not ("auto" or "firered" or "ten" or "silero"))
+        {
+            VadEngine = "auto";
+        }
+
+        if (string.IsNullOrWhiteSpace(AsrProvider) || AsrProvider is not ("auto" or "cuda" or "cpu"))
+        {
+            AsrProvider = "auto";
+        }
+
+        if (string.IsNullOrWhiteSpace(LlmBackend) || LlmBackend is not ("llama" or "llamacpp" or "http"))
+        {
+            LlmBackend = "llama";
+        }
+
+        if (string.IsNullOrWhiteSpace(GpuBackend) || GpuBackend is not ("auto" or "vulkan" or "cpu"))
+        {
+            GpuBackend = "auto";
+        }
+
+        if (string.IsNullOrWhiteSpace(LlmEndpoint) ||
+            !Uri.TryCreate(LlmEndpoint, UriKind.Absolute, out var endpoint) ||
+            (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
+        {
+            LlmEndpoint = "http://127.0.0.1:1234/v1";
+        }
+        if (string.IsNullOrWhiteSpace(AsrEngine)) AsrEngine = "sherpa";
         if (string.IsNullOrWhiteSpace(CohereAsrDtype) || CohereAsrDtype is not ("bfloat16" or "float16" or "float32"))
         {
             CohereAsrDtype = "bfloat16";

@@ -14,6 +14,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# pip/python are native commands: without this a failed install would still let
+# the script print "ready".
+if ($PSVersionTable.PSVersion -ge [Version]"7.3") {
+    $PSNativeCommandUseErrorActionPreference = $true
+}
 
 $root = Split-Path -Parent $PSScriptRoot
 $data = Join-Path $root "data"
@@ -21,10 +26,21 @@ $env_dir = Join-Path $data "python-env"
 $hfHome = Join-Path $data "hf-cache"
 New-Item -ItemType Directory -Force -Path $env_dir, $hfHome | Out-Null
 
+function Invoke-Python {
+    param([string[]]$Arguments)
+    & $script:pythonExe @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "python command failed with exit code ${LASTEXITCODE}: $($Arguments -join ' ')"
+    }
+}
+
 $pythonExe = Join-Path $env_dir "Scripts\python.exe"
 if (-not (Test-Path $pythonExe)) {
     Write-Host "creating virtual environment in $env_dir"
     & $Python -m venv $env_dir
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $pythonExe)) {
+        throw "could not create the virtual environment (is '$Python' a valid Python 3.12+?)"
+    }
 }
 
 $env:PIP_CACHE_DIR = Join-Path $data "pip-cache"
@@ -32,10 +48,10 @@ $env:HF_HOME = $hfHome
 $env:HF_HUB_DISABLE_XET = "1"
 
 Write-Host "installing PyTorch (CUDA 13) ..."
-& $pythonExe -m pip install torch --index-url https://download.pytorch.org/whl/cu130
+Invoke-Python @("-m", "pip", "install", "torch", "--index-url", "https://download.pytorch.org/whl/cu130")
 
 Write-Host "installing transformers and audio helpers ..."
-& $pythonExe -m pip install transformers soundfile numpy librosa huggingface_hub
+Invoke-Python @("-m", "pip", "install", "transformers", "soundfile", "numpy", "librosa", "huggingface_hub")
 
 if (-not $SkipModel) {
     $tokenPath = Join-Path $hfHome "token"
@@ -44,7 +60,14 @@ if (-not $SkipModel) {
     }
 
     Write-Host "downloading Cohere Transcribe weights (about 3.9 GB) ..."
-    & $pythonExe -c "from huggingface_hub import snapshot_download; print(snapshot_download('CohereLabs/cohere-transcribe-03-2026'))"
+    Invoke-Python @("-c", "from huggingface_hub import snapshot_download; print(snapshot_download('CohereLabs/cohere-transcribe-03-2026'))")
 }
+
+$serverScript = Join-Path $root "tools\cohere_pytorch\server.py"
+if (-not (Test-Path $serverScript)) {
+    throw "sidecar script missing: $serverScript"
+}
+
+Invoke-Python @("-c", "import torch, transformers; assert torch.cuda.is_available(), 'CUDA is not available to torch'; print('torch', torch.__version__, 'cuda ok')")
 
 Write-Host "Cohere ASR environment ready: $pythonExe"

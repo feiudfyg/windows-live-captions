@@ -32,6 +32,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private const double HeldFragmentFlushMs = 1800; // interjections wait this long for company
     private const double MinRunMs = 350;             // shorter blips are ignored
     private const double MaxAsrWindowMs = 8000;      // 4s windows cut words mid-syllable on continuous anime dialogue
+    private const long AsrFailureRetryMs = 2000;     // audio stays buffered; retry the window after this long
     private const int MaxRecentGaps = 24;
 
     // Input level normalization: the captured signal sits wherever the system
@@ -57,6 +58,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private ITranslator? _translator;
     private IVad? _vad;
     private bool _vadMode;
+    private bool _vadFallbackLogged;
     private CancellationTokenSource? _cts;
     private Task? _mainLoop;
     private Task? _translateLoop;
@@ -80,6 +82,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private long _lastSpeechStop;
     private DateTime _lastSpeechStopAt;
     private bool _utteranceHasSpeech;
+    private long _lastAsrFailureAt;
 
     // Caption assembly: run transcripts merge into one caption until a long pause.
     private string _captionText = "";
@@ -188,6 +191,10 @@ public sealed class CaptionPipeline : IAsyncDisposable
             : "[vad] no VAD model - using energy gate fallback");
     }
 
+    /// <summary>Drops the in-flight partial line (used by the "clear" button so the
+    /// next token does not resurrect it).</summary>
+    public void ResetLiveCaption() => _liveItem = null;
+
     public void Start()
     {
         if (IsRunning) return;
@@ -271,6 +278,29 @@ public sealed class CaptionPipeline : IAsyncDisposable
         _liveItem = null;
         _lastFinalText = "";
         _vad?.Reset();
+
+        // Drop leftovers so a restart starts from a clean slate instead of
+        // replaying audio or inheriting tuning state.
+        while (_audioChannel.Reader.TryRead(out _))
+        {
+        }
+
+        while (_translationChannel.Reader.TryRead(out _))
+        {
+        }
+
+        _pending.Clear();
+        _partialDebounce?.Cancel();
+        _partialDebounce = null;
+        _lastPartialText = null;
+        _lastPartialAt = DateTime.MinValue;
+        _lastDecodeMs = 0;
+        _lastAsrFailureAt = 0;
+        _lastSpeechStopAt = default;
+        _noiseFloor = 0.0005;
+        _levelAccum = 0;
+        _levelCount = 0;
+        _vadFallbackLogged = false;
     }
 
     private async Task AudioLoopAsync(CancellationToken ct)
@@ -317,7 +347,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
             double gate = 0;
             bool speechNow;
             bool runEnded = false;
-            if (_vadMode && _vad is not null)
+            if (_vadMode && _vad is not null && _vad.IsAvailable)
             {
                 _vad.Accept(block, block.Length);
                 _speechHold = _vad.SpeechActive ? SpeechHoldMs : Math.Max(0, _speechHold - 100);
@@ -338,8 +368,15 @@ public sealed class CaptionPipeline : IAsyncDisposable
             }
             else
             {
+                if (_vadMode && _vad is not null && !_vadFallbackLogged)
+                {
+                    _vadFallbackLogged = true;
+                    Log.Write($"[vad] {_vad.Engine} unavailable; falling back to the energy gate for this session");
+                }
+
                 speechNow = UpdateEnergyGate(scaledRms, out gate);
                 runEnded = _speech && _silenceMs >= _settings.FinalSilenceMs;
+                _wasSpeech = speechNow;
             }
 
             UpdateUtterance(block, speechNow);
@@ -520,6 +557,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
         else
         {
             if (_speech) _silenceMs += 100;
+            _speech = false;
             _noiseFloor = _noiseFloor * 0.98 + rms * 0.02;
         }
 
@@ -560,7 +598,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
     private async Task DecodeRunAsync(CancellationToken ct, bool emit, int cutSamples = 0)
     {
         var engine = _asr;
-        if (engine is null || !engine.IsLoaded)
+        if (engine is null)
         {
             _utterance.Clear();
             _utteranceHasSpeech = false;
@@ -569,10 +607,54 @@ public sealed class CaptionPipeline : IAsyncDisposable
             return;
         }
 
+        // After a failure, wait before touching the engine again: the audio is
+        // still buffered, so no speech is lost, and a broken engine does not get
+        // hammered once per 100 ms block.
+        if (Environment.TickCount64 - _lastAsrFailureAt < AsrFailureRetryMs) return;
+
+        if (!engine.IsLoaded)
+        {
+            // The engine dropped out (sidecar crash, CUDA loss, ...): try to bring
+            // it back and keep the audio until it answers again.
+            _lastAsrFailureAt = Environment.TickCount64;
+            try
+            {
+                Log.Write($"[asr] {engine.Name} not loaded; attempting reload");
+                await engine.LoadAsync(ct).ConfigureAwait(false);
+                Log.Write("[asr] engine reloaded");
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                ErrorOccurred?.Invoke($"识别引擎重载失败: {ex.Message}");
+            }
+
+            return;
+        }
+
         var take = cutSamples > 0 && cutSamples < _utterance.Count ? cutSamples : _utterance.Count;
         var samples = new float[take];
         _utterance.CopyTo(0, samples, 0, take);
 
+        var seconds = samples.Length / (double)SampleRate;
+
+        var (text, failed) = await RecognizeAsync(samples, ct).ConfigureAwait(false);
+        if (failed)
+        {
+            // Keep the audio: a dead/slow engine must not swallow speech. The
+            // backoff at the top prevents a retry storm; the cap below keeps a
+            // permanently broken engine from growing the buffer forever.
+            _lastAsrFailureAt = Environment.TickCount64;
+            if (_utterance.Count > SampleRate * 90)
+            {
+                var drop = _utterance.Count - SampleRate * 60;
+                _utterance.RemoveRange(0, drop);
+                Log.Write($"[asr] dropped {drop / 16000.0:0.0}s of buffered audio (engine unavailable)");
+            }
+
+            return;
+        }
+
+        // The decode succeeded (or the window was digital silence): consume it.
         if (take < _utterance.Count)
         {
             // Still inside the same speech run: the remainder seeds the next window.
@@ -586,9 +668,6 @@ public sealed class CaptionPipeline : IAsyncDisposable
             _silenceMs = 0;
         }
 
-        var seconds = samples.Length / (double)SampleRate;
-
-        var text = await RecognizeAsync(samples, ct).ConfigureAwait(false);
         if (text is null) return;
 
         AppendCaption(text, seconds);
@@ -617,7 +696,8 @@ public sealed class CaptionPipeline : IAsyncDisposable
         var seconds = samples.Length / (double)SampleRate;
         _lastPartialAt = DateTime.UtcNow;
 
-        var text = await RecognizeAsync(samples, ct, partial: true).ConfigureAwait(false);
+        var (text, failed) = await RecognizeAsync(samples, ct, partial: true).ConfigureAwait(false);
+        if (failed) _lastAsrFailureAt = Environment.TickCount64;
         if (text is null) return;
 
         // Punctuation-less engines (Zipformer) never mark a sentence end: if the
@@ -709,11 +789,13 @@ public sealed class CaptionPipeline : IAsyncDisposable
         _captionPending = true;
     }
 
-    /// <summary>Shared ASR call: quiet-skip, guards, timing, logging.</summary>
-    private async Task<string?> RecognizeAsync(float[] samples, CancellationToken ct, bool partial = false)
+    /// <summary>Shared ASR call: quiet-skip, guards, timing, logging.
+    /// <c>Failed</c> means the engine could not answer (transport/timeout/crash)
+    /// as opposed to silence or filtered output, so callers can keep the audio.</summary>
+    private async Task<(string? Text, bool Failed)> RecognizeAsync(float[] samples, CancellationToken ct, bool partial = false)
     {
         var engine = _asr;
-        if (engine is null || !engine.IsLoaded) return null;
+        if (engine is null || !engine.IsLoaded) return (null, false);
 
         // Only skip when the window is essentially digital silence. Do NOT scale
         // this by the noise floor: with background music the floor climbs to the
@@ -722,7 +804,7 @@ public sealed class CaptionPipeline : IAsyncDisposable
         if (rms < 0.0005)
         {
             Log.Write($"[asr] skipped quiet {(partial ? "partial" : "run")} {samples.Length / 16000.0:0.00}s rms={rms:0.00000}");
-            return null;
+            return (null, false);
         }
 
         string text;
@@ -735,12 +817,12 @@ public sealed class CaptionPipeline : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            return null;
+            return (null, true);
         }
         catch (Exception ex)
         {
-            ErrorOccurred?.Invoke($"识别失败: {ex}");
-            return null;
+            ErrorOccurred?.Invoke($"识别失败: {ex.Message}");
+            return (null, true);
         }
         finally
         {
@@ -749,16 +831,16 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
         _lastDecodeMs = stopwatch.ElapsedMilliseconds;
         text = TextGuards.TruncateRepetition(TextGuards.Normalize(text));
-        if (!IsMeaningful(text)) return null;
+        if (!IsMeaningful(text)) return (null, false);
 
         if (TextGuards.IsDegenerate(text))
         {
             Log.Write($"[asr] dropped repetitive output: {text[..Math.Min(80, text.Length)]}");
-            return null;
+            return (null, false);
         }
 
         Log.Write($"[asr] {(partial ? "partial" : "run")} {samples.Length / 16000.0:0.00}s in {stopwatch.ElapsedMilliseconds}ms: {text}");
-        return text;
+        return (text, false);
     }
 
     /// <summary>
@@ -842,8 +924,9 @@ public sealed class CaptionPipeline : IAsyncDisposable
 
     private void SchedulePartialTranslation(CaptionItem item, string text)
     {
+        // Cancel only: disposing the previous CTS here can race its Task.Delay and
+        // throw ObjectDisposedException inside the fire-and-forget task.
         _partialDebounce?.Cancel();
-        _partialDebounce?.Dispose();
         var cts = new CancellationTokenSource();
         _partialDebounce = cts;
 
@@ -860,6 +943,10 @@ public sealed class CaptionPipeline : IAsyncDisposable
             catch (OperationCanceledException)
             {
                 // superseded
+            }
+            finally
+            {
+                cts.Dispose();
             }
         }, CancellationToken.None);
     }
@@ -916,13 +1003,19 @@ public sealed class CaptionPipeline : IAsyncDisposable
                 await UiAsync(() => job.Item.Translation = translated).ConfigureAwait(false);
                 ItemUpdated?.Invoke(job.Item);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 break;
             }
+            catch (OperationCanceledException)
+            {
+                // A single backend timeout must not stop translation for the rest
+                // of the session: log it and move on to the next caption.
+                Log.Write("[mt] translation request timed out; continuing");
+            }
             catch (Exception ex)
             {
-                ErrorOccurred?.Invoke($"翻译失败: {ex}");
+                ErrorOccurred?.Invoke($"翻译失败: {ex.Message}");
             }
         }
     }

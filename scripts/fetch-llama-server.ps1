@@ -12,6 +12,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Native commands (curl, ...) must fail the script too.
+if ($PSVersionTable.PSVersion -ge [Version]"7.3") {
+    $PSNativeCommandUseErrorActionPreference = $true
+}
 
 $root = Split-Path -Parent $PSScriptRoot
 $runtime = Join-Path $root "data\runtime"
@@ -34,14 +38,28 @@ foreach ($asset in $assets) {
     $zip = Join-Path $downloads $asset
     if (-not (Test-Path $zip)) {
         Write-Host "downloading $asset"
-        curl.exe -sL -o $zip "$base/$asset"
-        if ($LASTEXITCODE -ne 0) { throw "download failed: $asset" }
+        $part = "$zip.part"
+        if (Test-Path $part) { Remove-Item -LiteralPath $part -Force }
+        curl.exe -fL --retry 3 --retry-delay 2 -o $part "$base/$asset"
+        if ($LASTEXITCODE -ne 0) {
+            if (Test-Path $part) { Remove-Item -LiteralPath $part -Force }
+            throw "download failed: $asset"
+        }
+
+        Move-Item -LiteralPath $part -Destination $zip -Force
     } else {
         Write-Host "using cached $asset"
     }
 
     Write-Host "extracting $asset"
-    Expand-Archive -Path $zip -DestinationPath $dest -Force
+    try {
+        Expand-Archive -Path $zip -DestinationPath $dest -Force
+    }
+    catch {
+        Write-Host "extraction failed - removing the cached archive so the next run re-downloads it"
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        throw
+    }
 }
 
 $server = Join-Path $dest "llama-server.exe"

@@ -39,6 +39,7 @@ public sealed class AudioCaptureService : IDisposable
     private Task? _pump;
     private DateTime _nextDeviceCheck = DateTime.UtcNow.AddSeconds(5);
     private int _restarting;
+    private volatile bool _disposed;
 
     public AudioCaptureService(AudioInputMode mode = AudioInputMode.System)
     {
@@ -166,9 +167,19 @@ public sealed class AudioCaptureService : IDisposable
         };
 
         ISampleProvider chain = buffer.ToSampleProvider();
-        if (chain.WaveFormat.Channels >= 2)
+        if (chain.WaveFormat.Channels == 2)
         {
             chain = new StereoToMonoSampleProvider(chain) { LeftVolume = 0.5f, RightVolume = 0.5f };
+        }
+        else if (chain.WaveFormat.Channels > 2)
+        {
+            // StereoToMonoSampleProvider only accepts exactly two channels, so a
+            // 5.1/7.1 default endpoint used to fail and be dropped silently: pick
+            // the front pair first, then downmix it.
+            var stereo = new MultiplexingSampleProvider([chain], 2);
+            stereo.ConnectInputToOutput(0, 0);
+            stereo.ConnectInputToOutput(1, 1);
+            chain = new StereoToMonoSampleProvider(stereo) { LeftVolume = 0.5f, RightVolume = 0.5f };
         }
 
         if (chain.WaveFormat.SampleRate != TargetSampleRate)
@@ -273,6 +284,10 @@ public sealed class AudioCaptureService : IDisposable
             {
                 for (var attempt = 1; attempt <= 4; attempt++)
                 {
+                    // The user may have paused/closed the app while we were backing
+                    // off: never resurrect a capture nobody owns.
+                    if (_disposed) return;
+
                     try
                     {
                         Stop();
@@ -291,7 +306,7 @@ public sealed class AudioCaptureService : IDisposable
                     await Task.Delay(1500).ConfigureAwait(false);
                 }
 
-                Failed?.Invoke("音频重新连接失败，请点击开始重新监听");
+                if (!_disposed) Failed?.Invoke("音频重新连接失败，请点击开始重新监听");
             }
             finally
             {
@@ -370,7 +385,12 @@ public sealed class AudioCaptureService : IDisposable
             }
             catch (Exception ex)
             {
-                Failed?.Invoke($"音频读取失败: {ex.Message}");
+                // A transient read failure must not leave the app deaf: report it
+                // and go through the same rebuild path as a device change.
+                Log.Write($"[audio] pump failed: {ex.Message} - reconnecting");
+                Failed?.Invoke($"音频读取失败，正在重连: {ex.Message}");
+                Interlocked.Exchange(ref _restarting, 0);
+                Restart();
                 break;
             }
         }
@@ -452,5 +472,9 @@ public sealed class AudioCaptureService : IDisposable
         _cts = null;
     }
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        _disposed = true;
+        Stop();
+    }
 }

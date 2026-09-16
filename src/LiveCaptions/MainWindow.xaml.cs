@@ -29,12 +29,14 @@ public sealed partial class MainWindow : Window
     private SettingsWindow? _settingsWindow;
 
     private bool _busy;
+    private bool _closing;
     private bool _dragging;
     private bool _resizing;
     private (int X, int Y) _cursorStart;
     private PointInt32 _windowStart;
     private SizeInt32 _sizeStart;
     private DispatcherQueueTimer? _toolbarTimer;
+    private System.ComponentModel.PropertyChangedEventHandler? _uiHandler;
 
     public MainWindow()
     {
@@ -78,8 +80,25 @@ public sealed partial class MainWindow : Window
         var area = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary).WorkArea;
         var w = (int)App.Settings.WindowWidth;
         var h = (int)App.Settings.WindowHeight;
-        var x = App.Settings.WindowX is { } sx ? (int)sx : area.X + (area.Width - w) / 2;
-        var y = App.Settings.WindowY is { } sy ? (int)sy : area.Y + area.Height - h - 96;
+        int x, y;
+        if (App.Settings.WindowX is { } sx && App.Settings.WindowY is { } sy)
+        {
+            // A monitor may have been unplugged since the position was saved: keep
+            // the overlay inside the work area of whatever display it points at.
+            var saved = DisplayArea.GetFromPoint(new PointInt32((int)sx, (int)sy), DisplayAreaFallback.Primary).WorkArea;
+            x = Math.Clamp((int)sx, saved.X, Math.Max(saved.X, saved.X + saved.Width - w));
+            y = Math.Clamp((int)sy, saved.Y, Math.Max(saved.Y, saved.Y + saved.Height - h));
+            if (x != (int)sx || y != (int)sy)
+            {
+                Log.Write($"[ui] window position clamped to the work area ({sx},{sy} -> {x},{y})");
+            }
+        }
+        else
+        {
+            x = area.X + (area.Width - w) / 2;
+            y = area.Y + area.Height - h - 96;
+        }
+
         appWindow.MoveAndResize(new RectInt32(x, y, w, h));
 
         // Style juggling (tool-window flag, click-through) can drop the topmost
@@ -142,11 +161,24 @@ public sealed partial class MainWindow : Window
 
     private void SubscribeUiEvents()
     {
-        App.Ui.PropertyChanged += (_, e) =>
+        _uiHandler = (_, e) =>
         {
             if (e.PropertyName == nameof(UiState.ShowOriginal))
             {
                 RefreshOriginalVisibility();
+            }
+        };
+        App.Ui.PropertyChanged += _uiHandler;
+
+        _toolbarTimer = _dispatcher.CreateTimer();
+        _toolbarTimer.Interval = TimeSpan.FromMilliseconds(900);
+        _toolbarTimer.IsRepeating = false;
+        _toolbarTimer.Tick += (_, _) =>
+        {
+            _toolbarTimer.Stop();
+            if (!_dragging && !_resizing)
+            {
+                Toolbar.Opacity = 0;
             }
         };
     }
@@ -182,12 +214,14 @@ public sealed partial class MainWindow : Window
         Log.Write($"[pipeline] StartAsync entered, triggered by: {Environment.StackTrace.Split('\n').Skip(3).FirstOrDefault()?.Trim()}");
         try
         {
-            StopAll();
+            await StopAllAsync();
+            if (CheckClosed()) return;
             _dispatcher.TryEnqueue(() => SetStatus("正在加载语音识别模型…"));
 
             var asr = CreateAsrEngine();
+            _asr = asr; // reachable by StopAllAsync while the model loads
             await Task.Run(() => asr.LoadAsync()).ConfigureAwait(true);
-            _asr = asr;
+            if (CheckClosed()) return;
             SetStatus($"语音识别就绪 · {asr.Name} ({asr.Backend})");
 
             ITranslator? translator = null;
@@ -198,8 +232,9 @@ public sealed partial class MainWindow : Window
                     var llmPath = ResolveLlmPath();
                     SetStatus("正在启动 llama.cpp 服务…");
                     var server = new LocalLlamaServer(App.Settings);
+                    _llamaServer = server; // ditto: kill it if the window closes first
                     await Task.Run(() => server.StartAsync(llmPath)).ConfigureAwait(true);
-                    _llamaServer = server;
+                    if (CheckClosed()) return;
 
                     var httpTranslator = new HttpTranslationService(App.Settings, server.BaseAddress);
                     await Task.Run(() => httpTranslator.LoadAsync()).ConfigureAwait(true);
@@ -217,6 +252,7 @@ public sealed partial class MainWindow : Window
                         Log.Write($"[mt] warmup failed: {ex.Message}");
                     }
 
+                    if (CheckClosed()) return;
                     SetStatus($"翻译就绪 · {Path.GetFileNameWithoutExtension(llmPath)} (llama.cpp :{server.ActualPort})");
                 }
                 else if (App.Settings.LlmBackend.Equals("http", StringComparison.OrdinalIgnoreCase))
@@ -225,6 +261,7 @@ public sealed partial class MainWindow : Window
                     var httpTranslator = new HttpTranslationService(App.Settings);
                     await Task.Run(() => httpTranslator.LoadAsync()).ConfigureAwait(true);
                     translator = httpTranslator;
+                    if (CheckClosed()) return;
                     SetStatus($"翻译就绪 · {httpTranslator.ModelName} ({httpTranslator.Backend})");
                 }
                 else
@@ -234,7 +271,9 @@ public sealed partial class MainWindow : Window
                     {
                         SetStatus("正在加载翻译模型…");
                         translator = new TranslationService(llmPath, App.Settings);
+                        _translator = translator; // free multi-GB weights if the window closes mid-load
                         await Task.Run(() => translator.LoadAsync()).ConfigureAwait(true);
+                        if (CheckClosed()) return;
                         SetStatus($"翻译就绪 · {translator.ModelName} ({translator.Backend})");
                     }
                     else
@@ -245,6 +284,7 @@ public sealed partial class MainWindow : Window
             }
 
             _translator = translator;
+            if (CheckClosed()) return;
 
             // Adaptive segmentation needs the tiny TEN VAD model; fetch it once.
             if (App.Settings.UseVad && !ModelCatalog.TenVad.Exists)
@@ -264,6 +304,8 @@ public sealed partial class MainWindow : Window
                 }
             }
 
+            if (CheckClosed()) return;
+
             var pipeline = new CaptionPipeline(App.Settings, _dispatcher);
             pipeline.SetEngines(asr, translator);
             pipeline.SetVad(CreateVad(asr));
@@ -272,8 +314,18 @@ public sealed partial class MainWindow : Window
             pipeline.ErrorOccurred += msg => SetStatus(msg, error: true);
             pipeline.Start();
             _pipeline = pipeline;
+            if (CheckClosed()) return;
 
             StartCapture();
+            if (_capture is null || !_capture.IsRunning)
+            {
+                // Starting the capture can fail (device gone, service hung): say so
+                // instead of pretending to listen.
+                SetStatus("音频捕获启动失败：请检查音频设备后重新点击开始", error: true);
+                await StopAllAsync();
+                return;
+            }
+
             var target = LanguageCatalog.FindTarget(App.Settings.TargetLanguage);
             var source = LanguageCatalog.FindSource(App.Settings.SourceLanguage);
             var input = AudioCaptureService.ModeLabel(AudioCaptureService.ParseMode(App.Settings.AudioSource));
@@ -290,12 +342,21 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"启动失败: {ex.Message}", error: true);
-            StopAll();
+            await StopAllAsync();
         }
         finally
         {
             SetBusy(false);
         }
+    }
+
+    /// <summary>True when the window is closing: start-up must unwind instead of
+    /// touching a disposed window or leaving engines behind.</summary>
+    private bool CheckClosed()
+    {
+        if (!_closing) return false;
+        Log.Write("[pipeline] start aborted: window closing");
+        return true;
     }
 
     /// <summary>
@@ -315,14 +376,24 @@ public sealed partial class MainWindow : Window
         });
     }
 
-    private void StopAll()
+    private async Task StopAllAsync()
     {
         if (_pipeline is not null)
         {
             _pipeline.ItemUpdated -= OnItemUpdated;
             var pipeline = _pipeline;
             _pipeline = null;
-            _ = pipeline.DisposeAsync();
+
+            // Wait for the audio/translate loops to finish before the engines they
+            // use are disposed - otherwise a native decode can outlive its model.
+            try
+            {
+                await pipeline.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[pipeline] dispose failed: {ex.Message}");
+            }
         }
 
         _capture?.Dispose();
@@ -413,7 +484,11 @@ public sealed partial class MainWindow : Window
 
     private void OnItemUpdated(CaptionItem item)
     {
-        Log.Write($"[caption{(item.IsPartial ? "/partial" : "")}] {item.Original} || {item.Translation}");
+        // Local diagnostics; truncated so long sessions do not fill the log with text.
+        var original = item.Original.Length > 200 ? item.Original[..200] : item.Original;
+        var translation = item.Translation ?? "";
+        if (translation.Length > 200) translation = translation[..200];
+        Log.Write($"[caption{(item.IsPartial ? "/partial" : "")}] {original} || {translation}");
         _dispatcher.TryEnqueue(() =>
         {
             if (!_items.Contains(item))
@@ -530,17 +605,8 @@ public sealed partial class MainWindow : Window
 
     private void Panel_PointerExited(object sender, PointerRoutedEventArgs e)
     {
-        _toolbarTimer ??= _dispatcher.CreateTimer();
-        _toolbarTimer.Interval = TimeSpan.FromMilliseconds(900);
-        _toolbarTimer.IsRepeating = false;
-        _toolbarTimer.Tick += (_, _) =>
-        {
-            _toolbarTimer.Stop();
-            if (!_dragging && !_resizing)
-            {
-                Toolbar.Opacity = 0;
-            }
-        };
+        if (_toolbarTimer is null) return;
+        _toolbarTimer.Stop();
         _toolbarTimer.Start();
     }
 
@@ -562,7 +628,7 @@ public sealed partial class MainWindow : Window
         Log.Write($"[ui] listen toggle, currently listening={App.Ui.IsListening}");
         if (App.Ui.IsListening)
         {
-            StopAll();
+            await StopAllAsync();
             SetStatus("已暂停");
         }
         else
@@ -574,6 +640,7 @@ public sealed partial class MainWindow : Window
     private void ClearButton_Click(object sender, RoutedEventArgs e)
     {
         _items.Clear();
+        _pipeline?.ResetLiveCaption();
         EmptyHint.Visibility = Visibility.Visible;
     }
 
@@ -634,7 +701,9 @@ public sealed partial class MainWindow : Window
 
             Log.Write("[ui] settings applied, reloading engines");
             ApplyBackdrop();
-            if (wasListening || App.Settings.AutoStartCapture)
+            // Only restart if it was actually running: AutoStartCapture is about
+            // launching the app, not about silently starting a paused session.
+            if (wasListening)
             {
                 await StartAsync();
             }
@@ -650,7 +719,15 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        _closing = true;
         PersistWindowBounds();
-        StopAll();
+        if (_uiHandler is not null)
+        {
+            App.Ui.PropertyChanged -= _uiHandler;
+            _uiHandler = null;
+        }
+
+        _toolbarTimer?.Stop();
+        _ = StopAllAsync();
     }
 }

@@ -121,6 +121,7 @@ public sealed class PyTorchAsrServer : IDisposable
         }
 
         Log.Write($"[cohere-asr] starting {Path.GetFileName(PythonPath)} on port {ActualPort} (model load ~11s)");
+        _process?.Dispose();
         _process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 Python sidecar");
         _process.OutputDataReceived += (_, e) => LogLine(e.Data);
         _process.ErrorDataReceived += (_, e) => LogLine(e.Data);
@@ -203,7 +204,12 @@ public sealed class PyTorchAsrServer : IDisposable
             {
                 Log.Write("[cohere-asr] stopping");
                 process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
+                if (!process.WaitForExit(5000))
+                {
+                    Log.Write("[cohere-asr] still alive after 5s; killing again");
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    if (!process.WaitForExit(5000)) Log.Write("[cohere-asr] could not be stopped");
+                }
             }
         }
         catch

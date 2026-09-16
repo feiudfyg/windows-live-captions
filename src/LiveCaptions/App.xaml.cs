@@ -57,10 +57,12 @@ public partial class App : Application
         }
     }
 
-    public static void ApplyAppearance()
-    {
-        var s = Settings;
+    public static void ApplyAppearance() => ApplyAppearance(Settings);
 
+    /// <summary>Applies appearance values from any settings object (the settings
+    /// window previews its working copy through the exact same rules).</summary>
+    public static void ApplyAppearance(AppSettings s)
+    {
         // Captions-only mode: the recognised text IS the caption, so it must be
         // visible and full size even if "show original" is off.
         Ui.ShowOriginal = s.ShowOriginal || !s.TranslateEnabled;

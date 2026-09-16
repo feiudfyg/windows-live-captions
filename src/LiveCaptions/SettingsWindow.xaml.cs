@@ -29,6 +29,19 @@ public sealed partial class SettingsWindow : Window
         _working = Clone(App.Settings);
         LoadIntoUi();
         _initializing = false;
+
+        // A download must not keep running (or touch controls) after the dialog is gone.
+        Closed += (_, _) =>
+        {
+            try
+            {
+                _downloadCts?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // already finished
+            }
+        };
     }
 
     private static AppSettings Clone(AppSettings source)
@@ -306,10 +319,8 @@ public sealed partial class SettingsWindow : Window
     /// <summary>Preview appearance changes on the overlay while the settings window is open.</summary>
     private void ApplyLiveAppearance()
     {
-        App.Ui.ShowOriginal = _working.ShowOriginal;
-        App.Ui.TranslationFontSize = _working.FontSize;
-        App.Ui.OriginalFontSize = Math.Max(10, Math.Round(_working.FontSize * 0.64));
-        App.Ui.PanelOpacity = _working.PanelOpacity;
+        // Same rules as the real apply path, so the preview never lies.
+        App.ApplyAppearance(_working);
     }
 
     private void MaxLinesSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
@@ -443,8 +454,9 @@ public sealed partial class SettingsWindow : Window
         {
             _downloadCts.Dispose();
             _downloadCts = null;
-            AsrDownloadButton.IsEnabled = true;
-            LlmDownloadButton.IsEnabled = true;
+            // Re-apply the backend gating: a finished download must not re-enable
+            // buttons that the current backend disables (e.g. HTTP mode).
+            UpdateBackendVisibility();
         }
     }
 

@@ -10,6 +10,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Native commands (curl, tar, ...) must fail the script too.
+if ($PSVersionTable.PSVersion -ge [Version]"7.3") {
+    $PSNativeCommandUseErrorActionPreference = $true
+}
 
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root "third_party\cuda12"
@@ -34,26 +38,57 @@ foreach ($package in "cuda_cudart", "libcublas") {
     $name = Split-Path $entry.relative_path -Leaf
     $zip = Join-Path $zips $name
 
-    if (-not (Test-Path $zip)) {
+    $expectedHash = $entry.sha256
+    $hashOk = $false
+    if (Test-Path $zip) {
+        if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+            $hashOk = $true
+        } else {
+            $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            $hashOk = $actual -eq $expectedHash.ToLowerInvariant()
+            if (-not $hashOk) {
+                Write-Host "cached $name has the wrong hash; re-downloading"
+                Remove-Item -LiteralPath $zip -Force
+            }
+        }
+    }
+
+    if (-not $hashOk) {
         Write-Host "downloading $name"
-        curl.exe -sL -o $zip "$base/$($entry.relative_path)"
+        $part = "$zip.part"
+        if (Test-Path $part) { Remove-Item -LiteralPath $part -Force }
+        curl.exe -fL --retry 3 --retry-delay 2 -o $part "$base/$($entry.relative_path)"
+        if ($LASTEXITCODE -ne 0) { throw "download failed: $name" }
+
+        if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
+            $actual = (Get-FileHash -LiteralPath $part -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expectedHash.ToLowerInvariant()) {
+                Remove-Item -LiteralPath $part -Force
+                throw "hash mismatch for $name (expected $expectedHash, got $actual)"
+            }
+        }
+
+        Move-Item -LiteralPath $part -Destination $zip -Force
     } else {
         Write-Host "using cached $name"
     }
 
     $temp = Join-Path $zips "$name.tmp"
     if (Test-Path $temp) { Remove-Item $temp -Recurse -Force }
-    Expand-Archive -Path $zip -DestinationPath $temp -Force
+    try {
+        Expand-Archive -Path $zip -DestinationPath $temp -Force
 
-    Get-ChildItem $temp -Recurse -File |
-        Where-Object { $patterns -contains $_.Name } |
-        ForEach-Object {
-            Write-Host "extracting $($_.Name)"
-            Copy-Item $_.FullName (Join-Path $x64 $_.Name) -Force
-            $wanted[$_.Name] = $true
-        }
-
-    Remove-Item $temp -Recurse -Force
+        Get-ChildItem $temp -Recurse -File |
+            Where-Object { $patterns -contains $_.Name } |
+            ForEach-Object {
+                Write-Host "extracting $($_.Name)"
+                Copy-Item $_.FullName (Join-Path $x64 $_.Name) -Force
+                $wanted[$_.Name] = $true
+            }
+    }
+    finally {
+        if (Test-Path $temp) { Remove-Item $temp -Recurse -Force }
+    }
 }
 
 $missing = $patterns | Where-Object { -not $wanted.ContainsKey($_) }

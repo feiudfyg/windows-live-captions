@@ -69,6 +69,15 @@ public sealed class CoherePyTorchAsrEngine : IAsrEngine
                 ? text.GetString()?.Trim() ?? ""
                 : "";
         }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+        {
+            // Transport level failure (sidecar crashed, hung or the port died): mark
+            // the engine unloaded so the pipeline keeps the buffered audio and
+            // reloads it (which restarts the sidecar) on the next attempt.
+            IsLoaded = false;
+            Log.Write($"[cohere-asr] transport failure: {ex.Message} - reload scheduled");
+            throw;
+        }
         finally
         {
             _gate.Release();

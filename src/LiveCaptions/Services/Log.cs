@@ -22,7 +22,18 @@ internal static class Log
             {
                 if (File.Exists(FilePath) && new FileInfo(FilePath).Length > 4_000_000)
                 {
-                    File.Delete(FilePath);
+                    // Roll instead of deleting: the previous session stays available
+                    // exactly when a crash loop makes it most valuable.
+                    var rolled = FilePath + ".1";
+                    try
+                    {
+                        if (File.Exists(rolled)) File.Delete(rolled);
+                        File.Move(FilePath, rolled);
+                    }
+                    catch
+                    {
+                        // Rolling is best-effort; keep appending if it failed.
+                    }
                 }
 
                 File.AppendAllText(FilePath, $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");

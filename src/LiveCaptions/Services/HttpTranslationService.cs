@@ -84,7 +84,7 @@ public sealed class HttpTranslationService : ITranslator
 
         var source = text.Trim();
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        var result = await RequestAsync(source, target, _hardening, 0, context, ct).ConfigureAwait(false);
+        var result = await RequestAsync(source, target, _hardening, null, context, ct).ConfigureAwait(false);
 
         // Self-repair: models occasionally echo the input, loop or answer in the
         // wrong language. Retry once with a hardened prompt and remember what
@@ -168,7 +168,7 @@ public sealed class HttpTranslationService : ITranslator
         return result;
     }
 
-    private Task<string> RequestAsync(string text, LanguageOption target, string hardening, double temperature, string? context, CancellationToken ct)
+    private Task<string> RequestAsync(string text, LanguageOption target, string hardening, double? temperature, string? context, CancellationToken ct)
         => RequestWithSystemAsync(
             text,
             TranslationText.SystemPrompt(target, LanguageCatalog.FindSource(_settings.SourceLanguage), context) + hardening,
@@ -192,12 +192,14 @@ public sealed class HttpTranslationService : ITranslator
             ct);
     }
 
-    private async Task<string> RequestWithSystemAsync(string text, string system, double temperature, CancellationToken ct)
+    private async Task<string> RequestWithSystemAsync(string text, string system, double? temperature, CancellationToken ct)
     {
         var body = new JsonObject
         {
             ["model"] = _model,
-            ["temperature"] = temperature > 0 ? temperature : _settings.TranslateTemperature,
+            // null = caller did not care; 0 from the repair prompt is deliberate
+            // (deterministic fallback) and must not be replaced by the setting.
+            ["temperature"] = temperature ?? _settings.TranslateTemperature,
             ["max_tokens"] = Math.Clamp(text.Length * 3, 64, _settings.MaxTranslateTokens),
             ["stream"] = false,
             ["messages"] = new JsonArray
@@ -220,9 +222,27 @@ public sealed class HttpTranslationService : ITranslator
             throw new InvalidOperationException($"翻译请求失败 ({(int)response.StatusCode}): {Trim(payload)}");
         }
 
-        var json = JsonNode.Parse(payload);
-        var content = json?["choices"]?[0]?["message"]?["content"]?.GetValue<string>() ?? "";
-        return TranslationText.Clean(content);
+        // A 200 with a proxy error page or an unexpected shape must be a failed
+        // request, not an exception that escapes the repair ladder.
+        try
+        {
+            var json = JsonNode.Parse(payload);
+            if (json?["choices"] is not JsonArray { Count: > 0 } choices ||
+                choices[0]?["message"]?["content"] is not JsonValue content)
+            {
+                throw new InvalidDataException($"响应格式无法识别: {Trim(payload)}");
+            }
+
+            return TranslationText.Clean(content.GetValue<string>());
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException($"响应不是 JSON: {Trim(payload)}", ex);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+        {
+            throw new InvalidDataException($"响应内容无法读取: {Trim(payload)}", ex);
+        }
     }
 
     /// <summary>Which of two candidate translations looks more like the target language.</summary>

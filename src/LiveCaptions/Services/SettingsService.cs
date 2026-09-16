@@ -25,8 +25,19 @@ public sealed class SettingsService
                 Settings = JsonSerializer.Deserialize<AppSettings>(json, Options) ?? new AppSettings();
             }
         }
-        catch
+        catch (Exception ex)
         {
+            // Keep the broken file for inspection instead of silently resetting.
+            Log.Write($"[settings] load failed ({ex.Message}); using defaults");
+            try
+            {
+                File.Move(SettingsPath, SettingsPath + ".broken", overwrite: true);
+            }
+            catch
+            {
+                // Best effort.
+            }
+
             Settings = new AppSettings();
         }
 
@@ -38,18 +49,25 @@ public sealed class SettingsService
         try
         {
             Directory.CreateDirectory(AppPaths.DataRoot);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(Settings, Options));
+            // Write-then-rename: a crash mid-save must never truncate the settings.
+            var temp = SettingsPath + ".tmp";
+            File.WriteAllText(temp, JsonSerializer.Serialize(Settings, Options));
+            File.Move(temp, SettingsPath, overwrite: true);
         }
-        catch
+        catch (Exception ex)
         {
             // Settings persistence is best-effort; never crash the app over it.
+            Log.Write($"[settings] save failed: {ex.Message}");
         }
     }
 
-    /// <summary>Replace the active settings object and persist it.</summary>
+    /// <summary>Replace the active settings object and persist it. The caller keeps
+    /// its own copy: the settings window keeps mutating its working object for live
+    /// previews after saving, and those edits must not leak into the running app.</summary>
     public void Update(AppSettings settings)
     {
-        Settings = settings;
+        Settings = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings, Options), Options)
+                   ?? settings;
         Save();
     }
 }

@@ -56,8 +56,17 @@ public sealed class LocalLlamaServer : IDisposable
             Log.Write($"[llama-server] port {configured} is busy, using {ActualPort}");
         }
 
-        var arguments = new List<string>
+        var arguments = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_settings.LlamaServerExtraArgs))
         {
+            arguments.AddRange(SplitArguments(_settings.LlamaServerExtraArgs));
+        }
+
+        // Our flags come last so user-supplied arguments cannot override the loopback
+        // binding, the port or the model (a stray --host 0.0.0.0 would expose the
+        // unauthenticated endpoint to the LAN).
+        arguments.AddRange(
+        [
             "-m", modelPath,
             "--host", "127.0.0.1",
             "--port", ActualPort.ToString(),
@@ -65,12 +74,7 @@ public sealed class LocalLlamaServer : IDisposable
             "-c", _settings.ContextSize.ToString(),
             "--flash-attn", "auto",
             "--reasoning", "off",
-        };
-
-        if (!string.IsNullOrWhiteSpace(_settings.LlamaServerExtraArgs))
-        {
-            arguments.AddRange(SplitArguments(_settings.LlamaServerExtraArgs));
-        }
+        ]);
 
         var startInfo = new ProcessStartInfo(ServerPath)
         {
@@ -201,7 +205,14 @@ public sealed class LocalLlamaServer : IDisposable
             {
                 Log.Write("[llama-server] stopping");
                 process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
+                if (!process.WaitForExit(5000))
+                {
+                    // A child that survived the first kill would keep the GPU
+                    // memory pinned: try once more and leave a trail in the log.
+                    Log.Write("[llama-server] still alive after 5s; killing again");
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    if (!process.WaitForExit(5000)) Log.Write("[llama-server] could not be stopped");
+                }
             }
         }
         catch

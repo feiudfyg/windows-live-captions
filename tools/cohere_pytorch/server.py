@@ -34,6 +34,8 @@ _firered_vad = None
 _vad_lock = threading.Lock()
 _vad_carry = np.zeros(0, dtype=np.float32)
 
+MAX_BODY_BYTES = 64 * 1024 * 1024  # ~21 minutes of 16 kHz float32 PCM
+
 
 def log(message: str) -> None:
     print(f"{time.strftime('%H:%M:%S')} {message}", flush=True)
@@ -42,9 +44,10 @@ def log(message: str) -> None:
 def process_vad_frames(samples: np.ndarray, reset: bool) -> dict:
     """Streams PCM through FireRedVAD and returns the per-frame speech flags.
 
-    The feature extractor drops the tail of every call, so 240 samples (frame
-    length minus hop) are carried over to keep the 10 ms frame grid aligned and
-    emit exactly one frame per 10 ms of audio.
+    The feature extractor builds a fresh fbank per call and drops the tail, so
+    the samples that were not covered by an emitted frame are carried over. The
+    carry is computed from the number of frames actually emitted, which keeps the
+    10 ms frame grid aligned for any block size (first block included).
     """
     global _vad_carry
 
@@ -56,19 +59,13 @@ def process_vad_frames(samples: np.ndarray, reset: bool) -> dict:
             _vad_carry = np.zeros(0, dtype=np.float32)
 
         audio = np.concatenate([_vad_carry, samples]) if _vad_carry.size else samples
-        if audio.size > 240:
-            _vad_carry = audio[-240:].copy()
-        else:
-            _vad_carry = audio.copy()
 
-        # AudioFeat expects Kaldi (int16) sample scale; VAD is tiny, one thread
-        # avoids thread-pool overhead dominating a 10-frame call.
-        previous_threads = torch.get_num_threads()
-        torch.set_num_threads(1)
-        try:
-            results = _firered_vad.detect_chunk((audio * 32768.0).astype(np.float32))
-        finally:
-            torch.set_num_threads(previous_threads)
+        frame_len, hop = 400, 160  # 25 ms window, 10 ms shift at 16 kHz
+        frames = 0 if audio.size < frame_len else (audio.size - frame_len) // hop + 1
+        next_start = frames * hop
+        _vad_carry = audio[next_start:].copy() if audio.size > next_start else np.zeros(0, dtype=np.float32)
+
+        results = _firered_vad.detect_chunk((audio * 32768.0).astype(np.float32))
 
         flags = [1 if r.is_speech else 0 for r in results]
         starts = sum(1 for r in results if r.is_speech_start)
@@ -77,23 +74,24 @@ def process_vad_frames(samples: np.ndarray, reset: bool) -> dict:
 
 
 def transcribe(samples: np.ndarray, language: str, punctuation: bool) -> str:
-    inputs = _processor(
-        samples, sampling_rate=16000, return_tensors="pt", language=language, punctuation=punctuation
-    )
-    chunk_index = inputs.get("audio_chunk_index")
-    inputs = inputs.to(_model.device, dtype=_model.dtype)
-
-    with _lock, torch.inference_mode():
-        outputs = _model.generate(**inputs, max_new_tokens=1024)
-
-    if chunk_index is not None:
-        text = _processor.decode(
-            outputs, skip_special_tokens=True, audio_chunk_index=chunk_index, language=language
+    with _lock:
+        inputs = _processor(
+            samples, sampling_rate=16000, return_tensors="pt", language=language, punctuation=punctuation
         )
-        if isinstance(text, list):
-            text = "".join(text)
-    else:
-        text = _processor.decode(outputs, skip_special_tokens=True)
+        chunk_index = inputs.get("audio_chunk_index")
+        inputs = inputs.to(_model.device, dtype=_model.dtype)
+
+        with torch.inference_mode():
+            outputs = _model.generate(**inputs, max_new_tokens=1024)
+
+        if chunk_index is not None:
+            text = _processor.decode(
+                outputs, skip_special_tokens=True, audio_chunk_index=chunk_index, language=language
+            )
+            if isinstance(text, list):
+                text = "".join(text)
+        else:
+            text = _processor.decode(outputs, skip_special_tokens=True)
 
     return text.strip()
 
@@ -131,9 +129,26 @@ class Handler(BaseHTTPRequestHandler):
                     key, value = pair.split("=", 1)
                     query[key] = value
 
-        length = int(self.headers.get("Content-Length", "0"))
+        if self.headers.get("Transfer-Encoding"):
+            self._send_json({"error": "chunked bodies are not supported"}, status=411)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            self._send_json({"error": "invalid Content-Length"}, status=400)
+            return
+
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._send_json({"error": "body too large"}, status=413)
+            return
+
         body = self.rfile.read(length) if length else b""
-        samples = np.frombuffer(body, dtype="<f4")
+        try:
+            samples = np.frombuffer(body, dtype="<f4")
+        except ValueError:
+            self._send_json({"error": "body must be little-endian float32 PCM"}, status=400)
+            return
 
         if route == "/vad":
             started = time.perf_counter()
@@ -195,6 +210,9 @@ def main() -> int:
 
     log("[boot] warming up (kernel autotune) ...")
     warm_started = time.perf_counter()
+    # Keep the intra-op pool small: the model runs on CUDA and the VAD shares this
+    # process, so a huge CPU pool only adds scheduling overhead.
+    torch.set_num_threads(max(2, min(4, os.cpu_count() or 4)))
     for samples in (np.zeros(16000, dtype=np.float32), np.random.randn(32000).astype(np.float32) * 0.05):
         try:
             transcribe(samples, args.language, True)
