@@ -64,6 +64,9 @@ data/
 *.mov
 *.avi
 *.webm
+*.ass
+*.srt
+*.vtt
 
 # CUDA 12 runtime redistributables (fetched by scripts/fetch-cuda12-runtime.ps1)
 third_party/cuda12/x64/
